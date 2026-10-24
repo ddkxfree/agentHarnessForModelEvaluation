@@ -4,19 +4,20 @@ Each instance runs in the official prebuilt image (``swebench/sweb.eval.x86_64.*
 the repository is checked out at ``/testbed``. After the solver stops, the scorer
 
 1. takes the model patch (the solver's output if it is a diff, else ``git diff`` of /testbed),
-2. resets /testbed to the base commit and applies that patch,
+2. starts a fresh container, resets /testbed to the base commit and applies that patch,
 3. runs the official eval script (checks out test files, applies the hidden test patch,
    runs FAIL_TO_PASS and PASS_TO_PASS tests), and
 4. grades the log with ``swebench.harness.grading.get_eval_report``.
 
-Unlike the official harness, step 3 runs in the container the agent used rather than a
-fresh one, so changes the agent made outside /testbed (e.g. installed packages) persist.
+Steps 2-4 run in a fresh container from the same image, as in the official harness, so
+changes the agent made outside /testbed (e.g. installed packages) do not leak into grading.
 Needs the optional dependency: ``uv sync --extra swebench``.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from typing import Any
 from harness.core.fingerprint import fingerprint
 from harness.core.solver import Generate, Solver
 from harness.core.task import DatasetSpec, Task, register, select
+from harness.core.trajectory import current_trajectory
 from harness.core.types import ModelOutput, Sample, Score, SolveResult
 from harness.sandbox.base import Sandbox, SandboxError, SandboxSpec
 from harness.solvers.basic_agent import BasicAgent
@@ -117,26 +119,41 @@ async def apply_patch(sandbox: Sandbox, patch: str) -> tuple[bool, str]:
 
 
 class SweBenchScorer:
-    """Resolved (1.0) iff every FAIL_TO_PASS and PASS_TO_PASS test passes with the model patch."""
+    """Resolved (1.0) iff every FAIL_TO_PASS and PASS_TO_PASS test passes with the model patch.
+
+    A ``SubmissionScorer``: the patch is collected from the agent's container and graded in a
+    fresh container from the same image, as in the official harness. The complete patch and
+    logs are saved as artifacts; ``details`` keeps their hashes and short tails.
+    """
 
     name = "swebench"
     requires_sandbox = True
+    fresh_sandbox = True
 
     def __init__(self, eval_timeout: float = 1800.0) -> None:
         self.eval_timeout = eval_timeout
 
-    async def __call__(self, sample: Sample, text: str, sandbox: Sandbox) -> Score:
+    async def collect(self, sample: Sample, text: str, sandbox: Sandbox) -> str:
+        patch, _ = await collect_patch(sandbox, text)
+        return patch
+
+    async def grade(self, sample: Sample, submission: str, sandbox: Sandbox) -> Score:
         from swebench.harness.grading import get_eval_report
         from swebench.harness.utils import make_test_spec
 
+        trajectory = current_trajectory()
         row = instance(sample)
-        patch, source = await collect_patch(sandbox, text)
-        details: dict[str, Any] = {"patch_source": source, "model_patch": patch[:20000]}
+        patch = submission
+        details: dict[str, Any] = {
+            "model_patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),
+            "model_patch_bytes": len(patch.encode()),
+        }
         if not patch.strip():
             return Score(value=0.0, extracted="empty_patch", method=self.name, details=details)
 
         applied, apply_log = await apply_patch(sandbox, patch)
-        details["apply_log"] = apply_log[-2000:]
+        trajectory.save_artifact("apply.log", apply_log)
+        details["apply_log_tail"] = apply_log[-2000:]
         if not applied:
             return Score(value=0.0, extracted="patch_failed", method=self.name, details=details)
 
@@ -147,6 +164,7 @@ class SweBenchScorer:
             "bash /eval.sh > /tmp/eval.log 2>&1; echo exit=$?", timeout=self.eval_timeout
         )
         log = (await sandbox.read_file("/tmp/eval.log")).decode(errors="replace")
+        details["eval_log_sha256"] = trajectory.save_artifact("eval.log", log).sha256
         details["eval_log_tail"] = log[-3000:]
         if res.timed_out:
             return Score(value=0.0, extracted="timeout", method=self.name, details=details)
@@ -187,7 +205,7 @@ class SweBenchScorer:
             "name": self.name,
             "swebench_version": swebench.__version__,
             "eval_timeout": self.eval_timeout,
-            "same_container": True,
+            "grading": "fresh_container",
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc

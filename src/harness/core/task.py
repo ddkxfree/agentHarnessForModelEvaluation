@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from harness.core.scorer import SandboxScorer, Scorer
+from harness.core.scorer import SandboxScorer, Scorer, SubmissionScorer
 from harness.core.solver import Solver
 from harness.core.types import Sample
 from harness.sandbox.base import SandboxSpec
@@ -26,7 +26,7 @@ class Task:
     dataset: DatasetSpec
     load: Callable[[], list[Sample]]
     solver: Solver
-    scorer: Scorer | SandboxScorer
+    scorer: Scorer | SandboxScorer | SubmissionScorer
     params: dict[str, Any] = field(default_factory=dict)
     # When set, every sample gets its own sandbox built from this spec.
     sandbox: Callable[[Sample], SandboxSpec] | None = None

@@ -61,6 +61,16 @@ class ModelOutput(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     latency_s: float = 0.0
     cached: bool = False
+    # What the server says actually answered, which may differ from the requested alias.
+    served_model: str | None = None
+    system_fingerprint: str | None = None
+
+    def served_identity(self) -> str | None:
+        if self.served_model is None:
+            return None
+        if self.system_fingerprint:
+            return f"{self.served_model}@{self.system_fingerprint}"
+        return self.served_model
 
 
 class Artifact(BaseModel):
@@ -146,8 +156,12 @@ class SampleResult(BaseModel):
     outcome: Outcome | None = None
     attempts: int = 0
     artifacts: list[Artifact] = Field(default_factory=list)
+    # Served model identities reported by the server, over all of the sample's model calls.
+    served_models: list[str] = Field(default_factory=list)
     # Identity of the sandbox the sample ran in, e.g. container and image ids.
     sandbox: dict[str, Any] | None = None
+    # The fresh sandbox a SubmissionScorer graded in, if any.
+    grading_sandbox: dict[str, Any] | None = None
     # Closing the sandbox failed; the result is still valid but resources may have leaked.
     cleanup_error: str | None = None
     # Scoring states replaced by `harness rescore`, oldest first.

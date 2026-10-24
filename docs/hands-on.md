@@ -39,7 +39,7 @@ uv run harness run -c configs/ollama-smoke.yaml
 uv run harness show runs/<run_id>                                   # 看汇总和"抽取方式分布"
 uv run harness show runs/<run_id> -t gsm8k --outcome wrong -n 3     # 看答错的题
 uv run harness run -c configs/ollama-smoke.yaml                     # 再跑一次：全部命中缓存，几秒结束
-uv run harness run -c configs/ollama-smoke.yaml --temperature 0.8 --no-cache
+uv run harness run -c configs/ollama-smoke.yaml --temperature 0.8   # 采样运行默认不复用缓存
 uv run harness diff runs/<第一次> runs/<最后一次>                    # 哪些题因为温度变化翻转了
 ```
 
@@ -121,5 +121,6 @@ DeepSeek 用 `-m deepseek/deepseek-chat` 加 `DEEPSEEK_API_KEY`。其他兼容 O
 | `cannot connect to Docker` | Docker Desktop 没启动 |
 | 大量 `env_error` | 看 `harness show` 里的 error；镜像没拉到或者内存不够最常见 |
 | 中途 Ctrl+C 后残留容器 | `uv run harness sandbox-cleanup` |
-| 想重新调用模型，不用缓存 | 加 `--no-cache` |
+| 想重新调用模型，不用缓存 | 加 `--no-cache`；temperature > 0 时默认就不复用缓存（`--cache-policy auto`） |
+| 想确认 SWE-bench 的判分可复现 | `uv run harness verify runs/<run_id>`：用保存的补丁在新容器里重新判分，不调模型 |
 | `the swebench task needs the optional dependency` | 运行 `uv sync --extra swebench` |
