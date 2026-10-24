@@ -142,15 +142,13 @@ def test_actual_image_drift_is_reported_separately(tmp_path):
     [drift] = report["environment_drift"]
     assert (drift["sample_id"], drift["field"]) == ("toy/1", "sandbox.image_id")
     assert drift["values"]["plain#2"] == "sha256:B" and drift["values"]["plain#1"] == "sha256:A"
-    assert not report["scores_comparable"] and not report["performance_comparable"]
+    assert not report["comparable"]
 
 
 def test_clean_comparison_is_comparable(tmp_path):
     compare_dir, _ = run(tmp_path, spec(tmp_path))
     report = read_json(compare_dir / "compare.json")
-    assert report["environment_drift"] == [] and report["scores_comparable"]
-    assert report["performance_comparable"]
-    assert set(report["cache_states"].values()) == {"fresh"}
+    assert report["environment_drift"] == [] and report["comparable"]
 
 
 def test_runs_on_different_samples_are_flagged(tmp_path):

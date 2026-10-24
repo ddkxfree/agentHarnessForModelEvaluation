@@ -184,7 +184,6 @@ async def resume_comparison(
         sandbox_provider=sandbox_provider,
         make_task=make_task,
         progress=progress,
-        resumed=True,
     )
 
 
@@ -196,7 +195,6 @@ async def _run_missing(
     sandbox_provider: SandboxProvider | None,
     make_task: TaskFactory,
     progress: Any | None,
-    resumed: bool = False,
 ) -> Path:
     spec = CompareSpec.model_validate(index["spec"])
     done = {(e["label"], e["repeat"]) for e in index["runs"]}
@@ -222,37 +220,19 @@ async def _run_missing(
                 sandbox_provider=sandbox_provider,
                 cache_policy=spec.cache_policy,
                 first_epoch=repeat,
-                namespace=condition_namespace(spec, condition),
+                namespace=spec.cache_namespace,
             )
             index["runs"].append(
                 {
                     "label": condition.label,
                     "repeat": repeat,
                     "run_dir": str(run_dir.relative_to(compare_dir)),
-                    "resumed": resumed,
                 }
             )
             write_json(compare_dir / "index.json", index)
 
     write_json(compare_dir / "compare.json", build_report(compare_dir))
     return compare_dir
-
-
-def condition_namespace(spec: CompareSpec, condition: Condition) -> str | None:
-    """Cache namespace of one condition. Conditions never share cached responses, even when
-    their requests are identical (e.g. an ablation of max_steps leaves the first prompt
-    unchanged); the epoch keeps repeats apart and lets a resumed run replay its own calls."""
-    if spec.cache_namespace is None:
-        return None
-    return f"{spec.cache_namespace}/{condition.label}"
-
-
-def cache_state(fresh: int, cached: int) -> str:
-    if fresh + cached == 0:
-        return "unrecorded"
-    if cached == 0:
-        return "fresh"
-    return "cached" if fresh == 0 else "mixed"
 
 
 def _solved(r: SampleResult) -> bool:
@@ -276,13 +256,6 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
         ),
         "mean_steps": sum(len(r.steps) for r in results) / n if n else 0.0,
         "cached_outputs": sum(1 for r in results if r.output and r.output.cached),
-        "fresh_calls": sum(r.calls.fresh for r in results),
-        "cached_calls": sum(r.calls.cached for r in results),
-        "fresh_input_tokens": sum(r.calls.fresh_usage.input_tokens for r in results),
-        "fresh_output_tokens": sum(r.calls.fresh_usage.output_tokens for r in results),
-        "cache_state": cache_state(
-            sum(r.calls.fresh for r in results), sum(r.calls.cached for r in results)
-        ),
         "served_models": sorted({m for r in results for m in r.served_models}),
         "cached_served_models": sorted({m for r in results for m in r.cached_served_models}),
     }
@@ -346,7 +319,6 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
                 "repeat": entry["repeat"],
                 "run_dir": entry["run_dir"],
                 "status": manifest.get("status"),
-                "resumed": entry.get("resumed", False),
                 "manifest": manifest,
                 "results": results,
             }
@@ -377,13 +349,7 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         conditions[condition.label] = {
             "params": spec.params_for(condition),
             "runs": [
-                {
-                    "repeat": r["repeat"],
-                    "run_dir": r["run_dir"],
-                    "status": r["status"],
-                    "resumed": r["resumed"],
-                    **s,
-                }
+                {"repeat": r["repeat"], "run_dir": r["run_dir"], "status": r["status"], **s}
                 for r, s in zip(label_runs, summaries, strict=True)
             ],
             "accuracy": {
@@ -399,11 +365,6 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
             "outcomes": {o.value: totals.get(o.value, 0) for o in Outcome},
             "finish_reasons": dict(finish.most_common()),
             "cached_outputs": sum(s["cached_outputs"] for s in summaries),
-            "fresh_calls": sum(s["fresh_calls"] for s in summaries),
-            "cached_calls": sum(s["cached_calls"] for s in summaries),
-            "mean_fresh_input_tokens": _mean([s["fresh_input_tokens"] for s in summaries]),
-            "mean_fresh_output_tokens": _mean([s["fresh_output_tokens"] for s in summaries]),
-            "cache_states": [s["cache_state"] for s in summaries],
             "served_models": sorted({m for s in summaries for m in s["served_models"]}),
             "cached_served_models": sorted(
                 {m for s in summaries for m in s["cached_served_models"]}
@@ -426,12 +387,6 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         conditions[condition.label]["accuracy"]["ci95_over_samples"] = [lo, hi]
 
     drift = environment_drift(runs)
-    cache_states = {
-        f"{label}#{run['repeat']}": state
-        for label, c in conditions.items()
-        for run, state in zip(c["runs"], c["cache_states"], strict=True)
-    }
-    all_fresh = all(state == "fresh" for state in cache_states.values())
     repeat_changes = any(c["repeat_config_changes"] for c in conditions.values())
     complete = all(
         len(runs[c.label]) == spec.repeats
@@ -439,7 +394,6 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         for c in spec.conditions
     )
     same_samples = len(set(sample_sets.values())) <= 1
-    scores_comparable = complete and same_samples and not repeat_changes and not drift
 
     baseline = spec.conditions[0].label
     paired = {
@@ -461,18 +415,12 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         "cache_policy": spec.cache_policy if spec.cache else "disabled",
         "repeats": spec.repeats,
         "baseline": baseline,
-        # Each check is reported on its own.
+        # Each check is reported on its own; ``comparable`` needs all of them.
         "complete": complete,
         "same_samples_in_every_run": same_samples,
         "repeat_config_changes": repeat_changes,
         "environment_drift": drift,
-        # Scores may be compared when the runs are complete and set up alike, even if some
-        # responses were replayed from the cache (e.g. after resuming).
-        "scores_comparable": scores_comparable,
-        # Wall time and tokens spent describe inference only when every model call was made
-        # in that run; replayed responses take no inference time and cost nothing.
-        "performance_comparable": scores_comparable and all_fresh,
-        "cache_states": cache_states,
+        "comparable": complete and same_samples and not repeat_changes and not drift,
         "samples": sample_ids,
         "conditions": conditions,
         "per_sample_solved": per_sample,

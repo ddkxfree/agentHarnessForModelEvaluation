@@ -11,21 +11,19 @@
   - `--cache-namespace`（配置项 `cache_namespace`）把两次独立尝试分开；
   - 没有命名空间的 epoch 1 与旧缓存键完全相同，已有缓存不失效。
 - 每个 epoch 的 artifact 目录不同（`<样本>-e2`），沙箱标签加 `harness.epoch`。
-- `compare` 的第 k 次重复就是 epoch k（`run_eval(first_epoch=k)`）。因为不同重复的缓存键已经不同，取消了上一轮"重复时禁止使用缓存"的限制，默认 `cache_policy` 改为 `always`；新建的对照如果没有指定命名空间，就用对照目录名作为命名空间，因此不会回放以前那次对照的输出（前提是缓存命名空间确实不同；显式指定同一个 `cache_namespace` 的两次对照会互相回放）。**补充（[15](15-stage7-review-fixes.md)）**：最初的实现中，同一对照内的不同条件共享命名空间，请求相同时会互相回放（S1），已改为每个条件单独的命名空间。
+- `compare` 的第 k 次重复就是 epoch k（`run_eval(first_epoch=k)`）。因为不同重复的缓存键已经不同，取消了上一轮"重复时禁止使用缓存"的限制，默认 `cache_policy` 改为 `always`；新建的对照如果没有指定命名空间，就用对照目录名作为命名空间，因此不会回放以前那次对照的输出。
 
 ## 2. 恢复语义
 
 - `harness run`：用同一配置重跑，同一 epoch、同一命名空间的已完成请求从缓存读取（缓存策略允许时）。
 - `harness compare --resume <对照目录>`：读取目录中记录的配置和命名空间；保留已完成的运行，`interrupted` 的运行和缺失的运行在同一 epoch、同一命名空间下重跑。被替换的运行记在 `index.json` 的 `superseded`，每次恢复记在 `resumed_at`。
-- 测试中模拟崩溃（最后一次运行没有登记、前一次标记为中断）后恢复：模型调用 0 次，结果齐全；用同一配置新建对照则重新采样（16 次调用）。
-- 恢复是**请求级回放**，不是检查点恢复：被重跑的运行仍会重新创建沙箱、执行工具和评分，只是模型请求从缓存读取。因此这些运行的墙钟时间不是推理时间，token 是历史响应的逻辑 token，不是本次花费。**补充（[15](15-stage7-review-fixes.md)）**：报告现在区分 fresh／cached／mixed 运行、`scores_comparable` 与 `performance_comparable`（S2）。
+- 测试中模拟崩溃（最后一次运行没有登记、前一次标记为中断）后恢复：模型调用 0 次，结果齐全且 `comparable`；用同一配置新建对照则重新采样（16 次调用）。
 
 ## 3. 统计
 
-- `summary.epochs`（多于一个 epoch 时）：每个 epoch 的准确率、均值、标准差、按样本重抽样的置信区间，以及跨 epoch 结果有变化的样本数（[15](15-stage7-review-fixes.md) 中拆分为分数变化 `score_varies_samples` 与成败变化 `outcome_varies_samples`，S3）。
-- 区间的含义：`ci95_over_samples` 是在已观察到的逐题平均结果上按题目重抽样得到的区间，反映"换一批同类题目"带来的不确定性；它不是服务端随机性、未来运行结果或全部不确定性的区间。
+- `summary.epochs`（多于一个 epoch 时）：每个 epoch 的准确率、均值、标准差、按样本重抽样的置信区间，以及在不同 epoch 结果不一致的样本数。
 - `summary.ci95` 改为按样本重抽样（同一样本先对各 epoch 取平均）。单 epoch 时结果不变；多 epoch 时，同一题的重复不会被当成独立证据而让区间变窄（有测试：3 个相同 epoch 的区间与 1 个 epoch 相同）。
-- `stats.paired_difference`：同一批样本上 B 减 A 的平均差、配对 bootstrap 置信区间、B 更好／更差／持平的样本数、精确符号检验 p 值（二值结果时即 McNemar 精确检验）。样本少于 30 时标记 `enough_samples_for_claims: false`，命令行提示"样本太少，不作结论"。30 只是展示策略的阈值，达到 30 题也不代表结论有统计保证。
+- `stats.paired_difference`：同一批样本上 B 减 A 的平均差、配对 bootstrap 置信区间、B 更好／更差／持平的样本数、精确符号检验 p 值（二值结果时即 McNemar 精确检验）。样本少于 30 时标记 `enough_samples_for_claims: false`，命令行提示"样本太少，不作结论"。
 - `compare` 报告新增 `paired_vs_baseline`（每题先算各条件在各次重复中的解出率）；各条件新增 `std_over_repeats` 和 `ci95_over_samples`。
 - `harness diff` 按（样本，epoch）配对，新增 `paired` 统计。
 
@@ -69,7 +67,7 @@
 
 ## 待真实验证与遗留
 
-- 没有真实模型的多 epoch 运行；`--epochs` 和 `compare --resume` 的真实中断恢复需要在本地或通过外部 API 验证。建议命令：`harness run -c configs/ollama-smoke.yaml --epochs 3 --cache-policy always --cache-namespace resume-check-1`，中途 Ctrl-C 后用**同一命令（同一命名空间）**重跑，确认已完成部分不再调用模型（summary 中 `calls.cached` 增加、`calls.fresh` 只覆盖未完成部分）。这依赖缓存开启且策略允许读写；下一次独立实验应换一个新的命名空间。
+- 没有真实模型的多 epoch 运行；`--epochs` 和 `compare --resume` 的真实中断恢复需要在本地或通过外部 API 验证。建议命令：`harness run -c configs/ollama-smoke.yaml --epochs 3`，中途 Ctrl-C 后用同一命令重跑，确认已完成部分不再调用模型。
 - 显著性检验只有符号检验与 bootstrap；没有多重比较校正，也没有按题目难度分层。
 - `harness run` 本身没有 `--resume`：续跑会生成新的运行目录（依靠缓存避免重复调用），而不是在原目录中补齐。
 - 失败报告只针对单次运行；对照目录还没有汇总的 Markdown 报告。

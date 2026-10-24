@@ -65,12 +65,10 @@ def epoch_stats(results: list[SampleResult]) -> dict[str, Any] | None:
     """Accuracy per epoch and its spread; None for single-epoch runs."""
     by_epoch: dict[int, list[float]] = defaultdict(list)
     by_sample: dict[str, list[float]] = defaultdict(list)
-    solved: dict[str, set[bool]] = defaultdict(set)
     for r in results:
         value = r.score.value if r.score else 0.0
         by_epoch[r.epoch].append(value)
         by_sample[r.sample.id].append(value)
-        solved[r.sample.id].add(r.outcome == Outcome.CORRECT)
     if len(by_epoch) < 2:
         return None
     per_epoch = {e: sum(v) / len(v) for e, v in sorted(by_epoch.items())}
@@ -85,10 +83,8 @@ def epoch_stats(results: list[SampleResult]) -> dict[str, Any] | None:
         "mean": mean,
         "std": std,
         "ci95_over_samples": [lo, hi],
-        # Samples whose score is not the same in every epoch (works for partial scores).
-        "score_varies_samples": sum(1 for v in by_sample.values() if len(set(v)) > 1),
-        # Samples solved (outcome correct) in some epochs but not in others.
-        "outcome_varies_samples": sum(1 for v in solved.values() if len(v) > 1),
+        # Samples solved in some epochs but not others: where repetition matters.
+        "inconsistent_samples": sum(1 for v in by_sample.values() if 0 < sum(v) < len(v)),
     }
 
 
@@ -139,16 +135,6 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
             "mean": sum(walls) / len(walls) if walls else None,
         },
         "cached": sum(o.cached for o in outputs),
-        # Model calls answered now vs replayed from the cache, and the tokens actually spent
-        # now. ``tokens`` above counts every response, including replayed ones.
-        "calls": {
-            "fresh": sum(r.calls.fresh for r in results),
-            "cached": sum(r.calls.cached for r in results),
-        },
-        "fresh_tokens": {
-            "input": sum(r.calls.fresh_usage.input_tokens for r in results),
-            "output": sum(r.calls.fresh_usage.output_tokens for r in results),
-        },
         "cleanup_errors": sum(r.cleanup_error is not None for r in results),
         # Model identities the server reported, counted per sample.
         "served_models": dict(Counter(m for r in results for m in r.served_models).most_common()),

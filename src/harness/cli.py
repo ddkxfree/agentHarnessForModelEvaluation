@@ -394,13 +394,7 @@ def _print_comparison(report: dict[str, Any]) -> None:
         console.print("[yellow]comparison is incomplete (missing or interrupted runs)[/]")
     for d in report["environment_drift"]:
         console.print(f"[yellow]environment drift[/] {d['sample_id']} {d['field']}: {d['values']}")
-    console.print(f"scores comparable: {report['scores_comparable']}")
-    console.print(f"wall time / tokens comparable: {report['performance_comparable']}")
-    replayed = {k: v for k, v in report["cache_states"].items() if v != "fresh"}
-    if replayed:
-        console.print(
-            f"[yellow]runs with replayed (cached) responses, not timed as inference:[/] {replayed}"
-        )
+    console.print(f"comparable: {report['comparable']}")
 
 
 @app.command()

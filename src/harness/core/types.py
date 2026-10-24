@@ -145,15 +145,6 @@ ERROR_OUTCOMES = {
 }
 
 
-class CallStats(BaseModel):
-    """Model calls of one sample: answered by the model now, or replayed from the cache."""
-
-    fresh: int = 0
-    cached: int = 0
-    # Tokens of the fresh calls only, i.e. what this run actually spent.
-    fresh_usage: Usage = Field(default_factory=Usage)
-
-
 class SampleResult(BaseModel):
     sample: Sample
     # Which repetition of the sample this is; see ``runner.run_eval(epochs=...)``.
@@ -182,7 +173,6 @@ class SampleResult(BaseModel):
     rescore_history: list[dict[str, Any]] = Field(default_factory=list)
     # Seconds from sandbox creation to cleanup, excluding time queued for a concurrency slot.
     wall_time_s: float | None = None
-    calls: CallStats = Field(default_factory=CallStats)
 
     def usage(self) -> Usage:
         """Tokens spent on the sample, including steps of a solver that failed midway."""

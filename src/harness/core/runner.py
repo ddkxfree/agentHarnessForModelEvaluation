@@ -140,7 +140,6 @@ async def run_samples(
             if cache is not None and (hit := cache.get(key)) is not None:
                 if (identity := hit.served_identity()) is not None:
                     served_cached.add(identity)
-                result.calls.cached += 1
                 return hit.model_copy(update={"cached": True})
             try:
                 out = await retry_async(
@@ -156,8 +155,6 @@ async def run_samples(
                 raise ModelCallError(_describe(exc)) from exc
             if (identity := out.served_identity()) is not None:
                 served.add(identity)
-            result.calls.fresh += 1
-            result.calls.fresh_usage += out.usage
             if cache is not None:
                 cache.put(key, out)
             return out
