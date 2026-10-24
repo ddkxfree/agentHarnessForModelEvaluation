@@ -1,11 +1,13 @@
 import asyncio
 
+import pytest
 from conftest import make_samples, make_task, question_number
 
 from harness.core.cache import DiskCache
 from harness.core.model import MockModel, RetryableError
 from harness.core.runner import run_samples
-from harness.core.types import GenerateConfig, ModelOutput, Outcome
+from harness.core.types import ErrorKind, GenerateConfig, ModelOutput, Outcome, Score
+from harness.sandbox.base import SandboxError
 
 
 def run(task, model, **kwargs):
@@ -38,6 +40,89 @@ def test_outcomes_are_classified(toy_task):
         Outcome.CORRECT,
     ]
     assert "ValueError: boom" in results[4].error
+
+
+class _Scorer:
+    name = "fixed"
+
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+
+    def __call__(self, sample, text):
+        return self.behaviour()
+
+    def describe(self):
+        return {"name": self.name}
+
+
+def _with_scorer(behaviour):
+    task = make_task(make_samples(1))
+    task.scorer = _Scorer(behaviour)
+    return task
+
+
+def _raise(exc):
+    def behaviour():
+        raise exc
+
+    return behaviour
+
+
+@pytest.mark.parametrize(
+    ("behaviour", "error"),
+    [
+        (_raise(KeyError("scorer bug")), "KeyError"),
+        (lambda: Score.model_construct(value=float("nan")), "invalid value"),
+        (lambda: 1.0, "scorer returned float, not Score"),
+        (lambda: Score(value=float("nan")), "ValidationError"),
+    ],
+)
+def test_scorer_failures_are_not_blamed_on_the_model(behaviour, error):
+    [r] = run(_with_scorer(behaviour), MockModel(lambda m: "The answer is 0"))
+    assert r.outcome == Outcome.SCORER_ERROR
+    assert r.error_kind == ErrorKind.SCORER
+    assert error in r.error
+    assert r.output is not None and r.output.text == "The answer is 0"
+
+
+def test_sandbox_error_in_scorer_is_env_error():
+    [r] = run(_with_scorer(_raise(SandboxError("docker died"))), MockModel(lambda m: "x"))
+    assert r.outcome == Outcome.ENV_ERROR
+
+
+def test_solver_bug_is_solver_error_and_model_failure_is_api_error():
+    class BrokenSolver:
+        name = "broken"
+
+        async def __call__(self, sample, generate, sandbox=None):
+            await generate([{"role": "user", "content": "hi"}])
+            raise IndexError("agent bug")
+
+        def describe(self):
+            return {"name": self.name}
+
+    task = make_task(make_samples(1))
+    task.solver = BrokenSolver()
+    [r] = run(task, MockModel(lambda m: "ok"))
+    assert (r.outcome, r.error_kind) == (Outcome.SOLVER_ERROR, ErrorKind.SOLVER)
+    assert r.error == "IndexError: agent bug"
+
+    def down(messages):
+        raise ValueError("bad request")
+
+    [r] = run(task, MockModel(down))
+    assert (r.outcome, r.error_kind) == (Outcome.API_ERROR, ErrorKind.MODEL)
+    assert r.error == "ValueError: bad request"
+
+
+def test_summary_stays_finite_and_counts_every_failure_kind():
+    from harness.analysis.stats import summarize
+
+    results = run(_with_scorer(_raise(KeyError("x"))), MockModel(lambda m: "1"))
+    s = summarize(results)
+    assert s["accuracy"] == 0.0
+    assert s["outcomes"]["scorer_error"] == 1
+    assert set(s["outcomes"]) >= {"api_error", "solver_error", "scorer_error", "env_error"}
 
 
 def test_retryable_errors_are_retried(toy_task):

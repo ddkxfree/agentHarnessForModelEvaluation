@@ -149,6 +149,27 @@ def test_model_errors_propagate():
         solve(MockModel(boom), ScriptSandbox({}))
 
 
+def test_model_call_failures_through_the_bridge_are_api_errors():
+    from fakes import FakeProvider
+
+    from harness.core.runner import run_samples
+    from harness.core.task import get_task
+
+    def down(messages):
+        raise ValueError("provider down")
+
+    class Provider(FakeProvider):
+        async def create(self, spec, *, labels):
+            return ScriptSandbox({})
+
+    task = get_task("terminal", solver="mini", ids=["hello-file"])
+    [r] = asyncio.run(
+        run_samples(task, task.load(), MockModel(down), GenerateConfig(), sandbox_provider=Provider())
+    )
+    assert r.outcome == Outcome.API_ERROR
+    assert r.error == "ValueError: provider down"
+
+
 def test_describe_is_stable_and_reflects_settings():
     a = MiniSweAgent(max_steps=10).describe()
     assert a == MiniSweAgent(max_steps=10).describe()

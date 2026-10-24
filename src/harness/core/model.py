@@ -15,6 +15,10 @@ class RetryableError(Exception):
     """Raised by a model when the failure is transient and the call may be retried."""
 
 
+class ModelCallError(Exception):
+    """A model call that still failed after retries. The cause is the last underlying error."""
+
+
 class Model(ABC):
     name: str
 
