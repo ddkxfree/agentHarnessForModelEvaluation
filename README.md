@@ -138,7 +138,11 @@ runs/<run_id>/
 | `truncated` | 输出因 `max_tokens` 被截断 |
 | `step_limit` | Agent 用完了步数上限仍未完成 |
 | `api_error` | 模型调用失败（重试后仍失败），计入分母，避免虚高 |
+| `solver_error` | Solver / Agent 代码本身出错，不是模型的问题 |
+| `scorer_error` | 评分器出错、标准答案无效，或打出了无效分数（NaN、不在 0～1 之间），不是模型的问题 |
 | `env_error` | 沙箱环境故障（镜像构建失败、容器异常等），不是模型的问题 |
+
+所有失败都计入分母，但会归到真正出错的一方，避免把平台或环境的问题算成模型能力不足。
 
 此外还会统计：
 
@@ -168,7 +172,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-83 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
+117 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
 
 ## 路线图
 

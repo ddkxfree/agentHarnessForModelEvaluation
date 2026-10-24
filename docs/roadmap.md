@@ -26,7 +26,18 @@
 - 阶段 1～4 已完成：GSM8K、MMLU；并发、重试、缓存续跑；manifest、rescore、diff；诊断统计。见 [01](progress/01-platform-core.md)。
 - 阶段 5 第 1～5 步已完成：Docker 沙箱、`env_error`、基线工具调用 Agent、轨迹记录、3 个自建终端任务和 Oracle 校验。见 [02](progress/02-agent-sandbox.md)。
 - 阶段 5 第 6、7 步已完成：SWE-bench Lite（官方镜像与判分逻辑、参考补丁 Oracle）、mini-swe-agent 作为 Solver 插件。见 [03](progress/03-swebench-mini-swe-agent.md)。
-- 83 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI。
+- 阶段 5 加固第一轮已完成：失败分为模型、Solver、评分器、环境四类，分数校验，数字精确比较，提交校验，CI 触发分支修正。见 [04](progress/04-correctness-diagnostics.md)。
+- 117 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI。
+
+### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
+
+1. ~~正确性与诊断：NaN 与数字比较、非法提交、失败分类、CI。~~ 已完成
+2. 失败可追踪：中途异常保留轨迹、完成样本及时落盘、清理失败要记录、单题总时长限制。
+3. 独立复核：完整产物、环境身份（镜像 digest、服务端模型版本）、新容器评分、SWE-bench 不调模型重评。
+4. 接入真实 Terminal-Bench（固定版本，3～5 题；Oracle 全过、不操作全失败；不改 core）。
+5. 有意义的 Solver 对照：固定模型、样本、预算和缓存策略，记录成功率、token、耗时和失败归类。
+
+缓存复用策略在第 3 或第 5 轮中明确（temperature > 0 时默认不复用），完整的多轮次 epochs 留到阶段 7。
 
 ## 下一步
 
