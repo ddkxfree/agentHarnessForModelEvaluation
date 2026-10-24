@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Protocol
@@ -39,6 +40,16 @@ class SandboxScorer(Protocol):
 
 def requires_sandbox(scorer: Scorer | SandboxScorer) -> bool:
     return bool(getattr(scorer, "requires_sandbox", False))
+
+
+def check_score(score: object) -> Score:
+    """Rejects what a buggy scorer may return, e.g. ``Score.model_construct(value=nan)``."""
+    if not isinstance(score, Score):
+        raise TypeError(f"scorer returned {type(score).__name__}, not Score")
+    value = score.value
+    if not (isinstance(value, int | float) and math.isfinite(value) and 0.0 <= value <= 1.0):
+        raise ValueError(f"scorer produced an invalid value {value!r}")
+    return score
 
 
 def normalize_number(raw: str) -> str | None:

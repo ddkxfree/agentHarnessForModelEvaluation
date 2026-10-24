@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -15,7 +14,7 @@ from harness.core.io import write_json, write_results
 from harness.core.manifest import environment_info, now, task_entry
 from harness.core.model import Model, ModelCallError
 from harness.core.retry import retry_async
-from harness.core.scorer import requires_sandbox
+from harness.core.scorer import check_score, requires_sandbox
 from harness.core.task import Task
 from harness.core.types import (
     ErrorKind,
@@ -24,7 +23,6 @@ from harness.core.types import (
     ModelOutput,
     Sample,
     SampleResult,
-    Score,
     classify,
 )
 from harness.sandbox.base import Sandbox, SandboxError, SandboxProvider
@@ -116,11 +114,7 @@ async def run_samples(
                     score = await task.scorer(sample, solved.output.text, sandbox)
                 else:
                     score = task.scorer(sample, solved.output.text)
-                if not isinstance(score, Score):
-                    raise TypeError(f"scorer returned {type(score).__name__}, not Score")
-                if not (math.isfinite(score.value) and 0.0 <= score.value <= 1.0):
-                    raise ValueError(f"scorer produced an invalid value {score.value!r}")
-                result.score = score
+                result.score = check_score(score)
             except Exception as exc:
                 fail(exc, stage)
             finally:

@@ -8,11 +8,11 @@ from harness.analysis import rescore as rescore_mod
 from harness.analysis.diff import diff_manifests, diff_runs, flatten
 from harness.analysis.rescore import rescore_run
 from harness.analysis.stats import bootstrap_ci, summarize
-from harness.core.io import read_results
+from harness.core.io import read_results, write_results
 from harness.core.model import MockModel
 from harness.core.runner import run_eval
 from harness.core.scorer import NumberMatchScorer
-from harness.core.types import GenerateConfig
+from harness.core.types import ErrorKind, GenerateConfig, Outcome, Score
 
 
 def evaluate(tmp_path, respond, config=None):
@@ -73,6 +73,90 @@ def test_rescore_uses_saved_outputs(tmp_path, monkeypatch):
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["results"]["toy"]["outcomes"]["extract_failed"] == 6
     assert len(manifest["tasks"][0]["rescore_history"]) == 1
+
+
+class BrokenScorer(NumberMatchScorer):
+    def __call__(self, sample, text):
+        if sample.id == "toy/0":
+            raise KeyError("broken scorer")
+        return super().__call__(sample, text)
+
+
+class NaNScorer(NumberMatchScorer):
+    def __call__(self, sample, text):
+        return Score.model_construct(value=float("nan"))
+
+
+def use_scorer(monkeypatch, scorer):
+    task = make_task()
+    task.scorer = scorer
+    monkeypatch.setattr(rescore_mod, "get_task", lambda name, **params: task)
+
+
+def test_rescore_with_fixed_scorer_clears_old_scorer_error(tmp_path, monkeypatch):
+    task = make_task()
+    task.scorer = BrokenScorer()
+    run_dir = asyncio.run(
+        run_eval(MockModel(good), [(task, GenerateConfig())], output_dir=tmp_path / "runs")
+    )
+    (broken,) = [r for r in read_results(run_dir / "toy/samples.jsonl") if r.sample.id == "toy/0"]
+    assert broken.outcome == "scorer_error" and broken.output is not None
+
+    use_scorer(monkeypatch, NumberMatchScorer())
+    changes = rescore_run(run_dir)
+    assert changes["toy"] == {
+        "accuracy_before": pytest.approx(5 / 6),
+        "accuracy_after": 1.0,
+        "samples_changed": 1,
+        "scorer_errors": 0,
+    }
+    results = {r.sample.id: r for r in read_results(run_dir / "toy/samples.jsonl")}
+    fixed = results["toy/0"]
+    assert (fixed.outcome, fixed.error, fixed.error_kind) == ("correct", None, None)
+    assert fixed.score.value == 1.0
+    (old,) = fixed.rescore_history
+    assert old["outcome"] == "scorer_error" and old["error_kind"] == "scorer"
+    assert "broken scorer" in old["error"]
+    assert results["toy/1"].rescore_history == []
+    summary = json.loads((run_dir / "manifest.json").read_text())["results"]["toy"]
+    assert summary["outcomes"]["correct"] == 6 and summary["outcomes"]["scorer_error"] == 0
+
+
+def test_rescore_failures_are_per_sample_scorer_errors(tmp_path, monkeypatch):
+    run_dir = evaluate(tmp_path, good)
+    use_scorer(monkeypatch, BrokenScorer())
+    changes = rescore_run(run_dir)
+    assert changes["toy"]["scorer_errors"] == 1
+    assert changes["toy"]["accuracy_after"] == pytest.approx(5 / 6)
+    results = {r.sample.id: r for r in read_results(run_dir / "toy/samples.jsonl")}
+    assert results["toy/0"].outcome == "scorer_error" and results["toy/0"].score is None
+    assert results["toy/0"].rescore_history[0]["score"]["value"] == 1.0
+    assert results["toy/5"].outcome == "correct"
+
+
+def test_rescore_rejects_invalid_scores(tmp_path, monkeypatch):
+    run_dir = evaluate(tmp_path, good)
+    use_scorer(monkeypatch, NaNScorer())
+    assert rescore_run(run_dir)["toy"]["scorer_errors"] == 6
+    for r in read_results(run_dir / "toy/samples.jsonl"):
+        assert r.outcome == "scorer_error" and "invalid value nan" in r.error
+
+
+def test_rescore_keeps_model_and_solver_failures(tmp_path, monkeypatch):
+    run_dir = evaluate(tmp_path, good)
+    path = run_dir / "toy/samples.jsonl"
+    results = read_results(path)
+    results[0].error, results[0].error_kind = "RuntimeError: agent crashed", ErrorKind.SOLVER
+    results[0].outcome = Outcome.SOLVER_ERROR
+    results[1].error, results[1].error_kind = "ModelCallError: 500", ErrorKind.MODEL
+    results[1].outcome = Outcome.API_ERROR
+    write_results(path, results)
+
+    use_scorer(monkeypatch, NumberMatchScorer())
+    assert rescore_run(run_dir)["toy"]["samples_changed"] == 0
+    results = read_results(path)
+    assert [r.outcome for r in results[:2]] == ["solver_error", "api_error"]
+    assert results[0].error == "RuntimeError: agent crashed"
 
 
 def test_diff_reports_config_changes_and_flips(tmp_path):
