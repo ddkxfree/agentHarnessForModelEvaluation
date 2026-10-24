@@ -28,9 +28,10 @@ async def _docker(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
 class DockerSandbox(Sandbox):
     """One container per sample. Images must provide ``bash`` and coreutils ``timeout``."""
 
-    def __init__(self, container: Any, workdir: str) -> None:
+    def __init__(self, container: Any, workdir: str, image: dict[str, Any] | None = None) -> None:
         self._container = container
         self.workdir = workdir
+        self._image = image or {}
 
     @property
     def id(self) -> str:
@@ -84,12 +85,20 @@ class DockerSandbox(Sandbox):
 
     def describe(self) -> dict[str, Any]:
         attrs = self._container.attrs or {}
+        host = attrs.get("HostConfig", {})
         return {
             "type": "docker",
             "container_id": self._container.id,
             "container_name": self._container.name,
             "image": attrs.get("Config", {}).get("Image"),
             "image_id": attrs.get("Image"),
+            **self._image,
+            # As applied by the daemon, not as requested.
+            "limits": {
+                "memory_bytes": host.get("Memory"),
+                "nano_cpus": host.get("NanoCpus"),
+                "network_mode": host.get("NetworkMode"),
+            },
         }
 
 
@@ -146,7 +155,35 @@ class DockerProvider(SandboxProvider):
             nano_cpus=int(spec.cpus * 1e9),
             labels={LABEL: "1", **labels},
         )
-        return DockerSandbox(container, spec.workdir)
+        return DockerSandbox(container, spec.workdir, await _docker(self._image_info, image))
+
+    def _image_info(self, image: str) -> dict[str, Any]:
+        attrs = self.client.images.get(image).attrs
+        return {
+            # Registry digests identify pulled images across machines; locally built ones
+            # have none and are identified by their content-addressed build context tag.
+            "image_digests": attrs.get("RepoDigests") or [],
+            "image_platform": f"{attrs.get('Os')}/{attrs.get('Architecture')}",
+        }
+
+    def describe(self) -> dict[str, Any]:
+        desc: dict[str, Any] = {"name": self.name}
+        try:
+            info = self.client.info()
+            version = self.client.version()
+        except Exception as exc:
+            desc["error"] = f"{type(exc).__name__}: {exc}"
+            return desc
+        desc["daemon"] = {
+            "version": version.get("Version"),
+            "api_version": version.get("ApiVersion"),
+            "os": info.get("OperatingSystem"),
+            "platform": f"{info.get('OSType')}/{info.get('Architecture')}",
+            "kernel": info.get("KernelVersion"),
+            "cpus": info.get("NCPU"),
+            "memory_bytes": info.get("MemTotal"),
+        }
+        return desc
 
     def cleanup(self) -> int:
         """Remove every container this harness started, e.g. after a crash."""

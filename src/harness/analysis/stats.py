@@ -57,6 +57,8 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
         },
         "cached": sum(o.cached for o in outputs),
         "cleanup_errors": sum(r.cleanup_error is not None for r in results),
+        # Model identities the server reported, counted per sample.
+        "served_models": dict(Counter(m for r in results for m in r.served_models).most_common()),
         "mean_latency_s": sum(fresh) / len(fresh) if fresh else None,
         "agent": agent,
     }

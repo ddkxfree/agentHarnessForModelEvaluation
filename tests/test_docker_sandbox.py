@@ -49,6 +49,18 @@ def test_exec_files_timeout_and_isolation():
                 "python -c \"import socket; socket.create_connection(('1.1.1.1', 53), 2)\""
             )
             assert net.exit_code != 0
+
+            desc = sb.describe()
+            assert desc["image"] == IMAGE and desc["image_id"].startswith("sha256:")
+            assert any(d.startswith("python@sha256:") for d in desc["image_digests"])
+            assert desc["image_platform"].startswith("linux/")
+            assert desc["limits"] == {
+                "memory_bytes": 1024**3,
+                "nano_cpus": 10**9,
+                "network_mode": "none",
+            }
+            daemon = provider.describe()["daemon"]
+            assert daemon["version"] and daemon["platform"].startswith("linux/")
         finally:
             await sb.close()
         containers = provider.client.containers.list(all=True, filters={"label": "harness.test"})
@@ -166,3 +178,43 @@ def test_swebench_gold_patch_resolves_and_no_change_does_not(
         run_samples(task, task.load(), model, GenerateConfig(), sandbox_provider=DockerProvider())
     )
     assert (r.outcome, r.score.extracted) == (outcome, extracted), (r.error, r.score)
+    assert r.grading_sandbox["container_id"] != r.sandbox["container_id"]
+    assert r.grading_sandbox["image_id"] == r.sandbox["image_id"]
+
+
+@pytest.mark.skipif(not _have_image(SWEBENCH_IMAGE), reason=f"{SWEBENCH_IMAGE} not pulled")
+def test_swebench_run_can_be_reverified_without_the_model(tmp_path):
+    """The saved patch alone reproduces the grade in a new container; tampering is caught."""
+    pytest.importorskip("swebench")
+    import json
+
+    from harness.analysis.verify import verify_run
+    from harness.core.io import read_results
+    from harness.core.runner import run_eval
+    from harness.sandbox.docker import DockerProvider
+
+    task = get_task("swebench", solver="oracle", ids=[SWEBENCH_ID])
+    run_dir = asyncio.run(
+        run_eval(
+            get_model("none/none"),
+            [(task, GenerateConfig())],
+            output_dir=tmp_path,
+            sandbox_provider=DockerProvider(),
+        )
+    )
+    [r] = read_results(run_dir / "swebench/samples.jsonl")
+    assert r.outcome == Outcome.CORRECT
+    names = {a.name for a in r.artifacts}
+    assert {"submission", "apply.log", "eval.log"} <= names
+    sub = next(a for a in r.artifacts if a.name == "submission")
+    patch = (run_dir / "swebench/artifacts" / sub.path).read_text()
+    assert patch.startswith("diff --git") and r.score.details["model_patch_bytes"] == sub.size
+
+    report = asyncio.run(verify_run(run_dir, DockerProvider()))
+    assert report["swebench"]["statuses"] == {"agree": 1}, report
+    row = json.loads((run_dir / "swebench/verify.jsonl").read_text())
+    assert row["grading_sandbox"]["container_id"] != r.grading_sandbox["container_id"]
+
+    (run_dir / "swebench/artifacts" / sub.path).write_text(patch.replace("+", "-", 1))
+    report = asyncio.run(verify_run(run_dir, DockerProvider()))
+    assert report["swebench"]["statuses"] == {"submission_hash_mismatch": 1}

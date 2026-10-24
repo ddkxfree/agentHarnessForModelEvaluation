@@ -6,7 +6,7 @@
 
 - **平台内核**：用 GSM8K 和 MMLU 跑通"加载数据 → 构造 prompt → 调模型 → 抽取答案 → 打分 → 统计 → 归档"的完整链路，具备并发、重试、缓存续跑、可复现记录、离线重打分和运行对比能力。
 - **Agent 评测**：每道题一个 Docker 容器，Agent 通过工具调用在容器里执行命令，结束后由测试脚本检查容器状态来判分；完整记录 Agent 每一步的轨迹。
-- **SWE-bench 与 mini-swe-agent**：接入 SWE-bench Lite（官方镜像和判分逻辑）；mini-swe-agent 作为可替换的 Solver 插件，和基线 Agent 在同一批题上对比。
+- **SWE-bench 与 mini-swe-agent**：接入 SWE-bench Lite（官方镜像和判分逻辑，补丁在全新容器中判分，可用 `harness verify` 独立复核）；mini-swe-agent 作为可替换的 Solver 插件，和基线 Agent 在同一批题上对比。
 
 **想在自己电脑上跑起来，看 [上手练习指南](docs/hands-on.md)。** 每一轮工作的详细记录见 [`docs/progress/`](docs/progress/README.md)，后续计划见 [`docs/roadmap.md`](docs/roadmap.md)。
 
@@ -60,6 +60,7 @@ harness show runs/<run_id>                           # 汇总、抽取方式分�
 harness show runs/<run_id> -t gsm8k --outcome extract_failed -n 5   # 查看某类失败样本
 harness show runs/<run_id> --sample terminal/count-errors           # 某道题的完整 Agent 轨迹
 harness rescore runs/<run_id>                        # 改了打分逻辑后，不调模型直接重打分
+harness verify runs/<run_id>                         # 在新容器里重新判分已保存的补丁（SWE-bench），不调模型
 harness diff runs/<a> runs/<b>                       # 对比两次运行：配置/环境差异 + 逐样本翻转
 harness sandbox-cleanup                              # 清理异常退出后残留的容器
 ```
@@ -163,7 +164,7 @@ runs/<run_id>/
 - **格式不遵守**：prompt 要求以 `The answer is <number>` 结尾，但 GSM8K 有 18/20 的回答用了 `\boxed{}`。
 - **样本量太小时置信区间很宽**：20 道题的 95% 置信区间横跨 40 个百分点。
 - **指标抖动**：temperature 改成 0.8 再跑一次，准确率仍是 0.450，但有 2 道题由对变错、2 道题由错变对。
-- **缓存续跑**：相同配置第二次运行全部命中缓存，耗时从约 70 秒降到约 3 秒。
+- **缓存续跑**：相同配置第二次运行全部命中缓存，耗时从约 70 秒降到约 3 秒。默认策略 `auto` 只在 temperature 为 0 时复用缓存，采样运行（temperature > 0）每次都重新调用模型；可用 `--cache-policy always|never` 改变，manifest 中记录每个任务实际是否使用了缓存。
 
 在 3 个自建终端任务上，Oracle 3/3 通过；`qwen2.5:3b-instruct` 通过 1/3。从轨迹能直接看出失败原因：它在 `count-errors` 上用 `grep -c ERROR` 得到 211（正确答案 96，有些 INFO、WARN 消息正文里也含 ERROR），在 `fix-mean` 上连续执行了 7 次没有实际改动的 `sed` 就提交了。`qwen2.5:0.5b-instruct` 则是只创建了空文件，却回复说已写入内容。
 
@@ -174,7 +175,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-152 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
+168 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
 
 ## 路线图
 

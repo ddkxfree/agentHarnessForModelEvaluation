@@ -71,6 +71,10 @@ def run(
     concurrency: Annotated[int | None, typer.Option()] = None,
     retries: Annotated[int | None, typer.Option()] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache")] = False,
+    cache_policy: Annotated[
+        str | None,
+        typer.Option(help="auto (reuse only at temperature 0), always or never"),
+    ] = None,
     output_dir: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Evaluate a model on one or more tasks."""
@@ -93,6 +97,7 @@ def run(
         ("concurrency", concurrency),
         ("retries", retries),
         ("output_dir", output_dir),
+        ("cache_policy", cache_policy),
     ]:
         if value is not None:
             updates[key] = value
@@ -144,6 +149,7 @@ def run(
                 run_config=cfg.model_dump(mode="json"),
                 progress=progress,
                 sandbox_provider=sandbox_provider,
+                cache_policy=cfg.cache_policy,
             )
         )
 
@@ -241,6 +247,42 @@ def rescore(run_dir: Path) -> None:
             f"{name}: accuracy {c['accuracy_before']:.3f} -> {c['accuracy_after']:.3f}"
             f" ({c['samples_changed']} samples changed, {c['scorer_errors']} scorer errors)"
         )
+
+
+@app.command()
+def verify(
+    run_dir: Path,
+    task: Annotated[list[str] | None, typer.Option("--task", "-t")] = None,
+    sample: Annotated[list[str] | None, typer.Option(help="Only these sample ids")] = None,
+    concurrency: Annotated[int, typer.Option()] = 2,
+    update: Annotated[
+        bool, typer.Option("--update", help="Replace the recorded grades with the new ones")
+    ] = False,
+) -> None:
+    """Re-grade saved submissions (e.g. SWE-bench patches) in fresh containers, no model calls."""
+    from harness.analysis.verify import verify_run
+    from harness.sandbox.docker import DockerProvider
+
+    report = asyncio.run(
+        verify_run(
+            run_dir,
+            DockerProvider(),
+            tasks=task,
+            sample_ids=sample,
+            concurrency=concurrency,
+            update=update,
+        )
+    )
+    for name, r in report.items():
+        if "skipped" in r:
+            console.print(f"{name}: skipped ({r['skipped']})")
+            continue
+        console.print(f"{name}: {r['n']} samples, {r['statuses']}")
+        if r["disagreements"]:
+            console.print(f"[red]disagree:[/] {', '.join(r['disagreements'])}")
+        fp = r["scorer_fingerprint"]
+        if fp["recorded"] != fp["current"]:
+            console.print(f"[yellow]scorer changed since the run[/]: {fp}")
 
 
 @app.command()
