@@ -23,7 +23,7 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
-理解后续阶段可先读 [后续阶段说明](next-stages.md)。阶段十已审查缓存分支 `b45bf80`：预算、协议和消融配置已实现，真实消融待运行；本机 216 passed、3 failed、16 skipped，三个失败涉及缺少可选依赖时的测试隔离。还需补预算并发边界和实际预算不等时的归因说明，见 [17 复评](progress/17-stage10-review.md)。本轮未把阶段十源码同步到当前工作分支。
+理解后续阶段可先读 [后续阶段说明](next-stages.md)。阶段十历史评审见 [17](progress/17-stage10-review.md)。当前已更新到 master `21e9665`，阶段十源码和补修均已合入；本次 225 passed、18 skipped，静态检查通过。T1 并发预算与 T3 可选依赖测试通过复核；T2 尚漏跨条件的任务内额外差异，见 [19](progress/19-stage10-fix-review.md)。真实消融仍待运行。下一阶段为 [阶段六最小 Judge](stage6-plan.md)，可在小补修期间开始开发，无需等待真实消融。
 
 历史复评记录：第 11 轮评审时工作区停在 PR #6，从缓存的 PR #10 分支 `c950fa5` 导出审查了累积源码，本机 179 passed、14 skipped；详见 [11](progress/11-stage5-review-and-next.md)。当前已更新到 `8ebc843`，包含阶段七。阶段七复评本机 198 passed、16 skipped，静态检查通过；消融条件间缓存隔离、恢复后的耗时口径和部分分数一致性仍需补修，见 [14](progress/14-stage7-review.md)。真实 TB／SWE Solver 对照仍待运行。
 
@@ -72,8 +72,10 @@
 
 ### 阶段 6：LLM-as-Judge
 
+下一轮最小交付、架构边界、MockModel 测试和真实验证范围见 [阶段六计划](stage6-plan.md)。
+
 1. `JudgeScorer`：单点打分（rubric）和两两对比两种模式；裁判模型通过同样的 `get_model` 配置。
-2. 两两对比时交换 A/B 顺序各评一次，不一致记为平局，并统计位置偏差率。
+2. 两两对比时交换 A/B 顺序各评一次，不一致记为 unstable／inconclusive，与明确平局分开，并统计顺序不一致率。
 3. 多裁判投票。
 4. 接入 MT-Bench 或 Arena-Hard 的少量样本作为验证。
 5. 用一小批人工标注（或 lmarena 公开的人类偏好数据）计算裁判与人类的一致率。
