@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+2026-10-24 累积复评：当前工作区仍在 PR #6；另从已缓存的 PR #10 分支 `c950fa5` 导出并审查了 #6～#10 的累积源码，没有同步或修改当前实现。第五阶段已有可用原型，下一阶段可在补修创建失败清理、缓存模型身份和实际环境漂移检查后推进。最新快照本机 179 passed、14 skipped，静态检查通过；真实 TB／SWE Solver 对照仍待运行。详见 [11 复评与本地运行计划](progress/11-stage5-review-and-next.md)。以下状态条目保留当前工作区对应的记录，不代表已同步远端新实现。
+
 - 阶段 1～4 已完成：GSM8K、MMLU；并发、重试、缓存续跑；manifest、rescore、diff；诊断统计。见 [01](progress/01-platform-core.md)。
 - 阶段 5 第 1～5 步已完成：Docker 沙箱、`env_error`、基线工具调用 Agent、轨迹记录、3 个自建终端任务和 Oracle 校验。见 [02](progress/02-agent-sandbox.md)。
 - 阶段 5 第 6、7 步已完成：SWE-bench Lite（官方镜像与判分逻辑、参考补丁 Oracle）、mini-swe-agent 作为 Solver 插件。见 [03](progress/03-swebench-mini-swe-agent.md)。
