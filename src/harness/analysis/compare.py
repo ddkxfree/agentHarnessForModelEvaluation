@@ -46,6 +46,31 @@ NOTES = {
     "ablation": "Each condition changes exactly one parameter of the baseline (first) condition.",
 }
 
+# Parameters that limit how much work a solver may do on one sample. An ablation that changes
+# one of them measures sensitivity to the budget, not the effect of a mechanism.
+BUDGET_KEYS = ("max_steps", "time_limit", "token_limit", "command_timeout")
+
+EXPERIMENT_NOTES = {
+    "solver_comparison": NOTES["solver_comparison"],
+    "budget_sensitivity": (
+        "Conditions change a budget, not the agent: differences show how the result depends "
+        "on the budget and say nothing about which mechanism is better."
+    ),
+    "mechanism_ablation": (
+        "Conditions change one mechanism of the agent under the same budgets, so differences "
+        "can be attributed to that mechanism (within the statistical uncertainty)."
+    ),
+    "mixed": "Some conditions change a budget and others a mechanism; read them separately.",
+    "inconclusive": (
+        "The recorded runs do not support attributing the differences to the changed "
+        "parameter (see interpretation.reasons); the numbers are shown for inspection only."
+    ),
+}
+
+# Parameter names that suggest a budget the report does not know how to read; changing one
+# keeps the budgets from being confirmed equal.
+_BUDGET_HINTS = ("budget", "limit", "timeout", "steps")
+
 
 class Condition(BaseModel):
     label: str
@@ -275,6 +300,7 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
             Counter((r.output.finish_reason or "none") if r.output else "none" for r in results)
         ),
         "mean_steps": sum(len(r.steps) for r in results) / n if n else 0.0,
+        "steps_without_tool_calls": sum(1 for r in results for s in r.steps if not s.tool_calls),
         "cached_outputs": sum(1 for r in results if r.output and r.output.cached),
         "fresh_calls": sum(r.calls.fresh for r in results),
         "cached_calls": sum(r.calls.cached for r in results),
@@ -306,6 +332,72 @@ def _relevant_changes(a: dict[str, Any], b: dict[str, Any]) -> list[list[Any]]:
         # repeat k is epoch k by design
         if not key.startswith("run_config.compare.") and not key.endswith(".epochs")
     ]
+
+
+def budgets(manifest: dict[str, Any], task_name: str) -> dict[str, Any]:
+    """The budgets a run actually used, read from its manifest; None when the manifest does not
+    record them (no such task, or written before token budgets existed). A budget of None
+    means the task has no such limit."""
+    entry = next((t for t in manifest.get("tasks", []) if t.get("name") == task_name), None)
+    if entry is None or "token_limit" not in entry:
+        return None
+    params = entry.get("params") or {}
+    return {
+        "max_steps": params.get("max_steps"),
+        "command_timeout": params.get("command_timeout"),
+        "time_limit": entry.get("time_limit"),
+        "token_limit": entry.get("token_limit"),
+    }
+
+
+def changed_params(spec: CompareSpec, condition: Condition) -> list[str]:
+    return sorted(k for k, v in condition.params.items() if spec.params.get(k, _MISSING) != v)
+
+
+def experiment_type(spec: CompareSpec, condition: Condition) -> str:
+    """The kind of experiment the spec asks for, judged from the parameter it changes."""
+    if spec.kind == "solver_comparison":
+        return "solver_comparison"
+    changed = changed_params(spec, condition)
+    return "budget_sensitivity" if set(changed) & set(BUDGET_KEYS) else "mechanism_ablation"
+
+
+def _extra_changes(changes: list[list[Any]], changed: list[str]) -> list[str]:
+    """Manifest differences that do not follow from the condition's own parameters. Every
+    condition's task comes from the same factory, so differences inside the task entry are
+    consequences of the changed parameter (derived budgets are checked separately); anything
+    else (model, generation settings, harness version, ...) confounds the comparison."""
+    expected = {f"run_config.params.{k}" for k in changed}
+    return [key for key, _, _ in changes if not key.startswith("tasks.") and key not in expected]
+
+
+def interpret(
+    requested: str,
+    changed: list[str],
+    budget: dict[str, Any] | None,
+    base_budget: dict[str, Any] | None,
+    extra_changes: list[str],
+) -> list[str]:
+    """Reasons the recorded runs of one condition do not support the requested reading."""
+    reasons = []
+    if extra_changes:
+        reasons.append(f"also differs from the baseline in {', '.join(extra_changes)}")
+    if budget is None or base_budget is None:
+        reasons.append("budgets are not recorded, so they cannot be confirmed")
+    else:
+        differ = sorted(k for k in BUDGET_KEYS if budget[k] != base_budget[k])
+        allowed = set(changed) if requested == "budget_sensitivity" else set()
+        if unintended := [k for k in differ if k not in allowed]:
+            values = ", ".join(f"{k} {base_budget[k]} -> {budget[k]}" for k in unintended)
+            reasons.append(f"budgets differ from the baseline: {values}")
+    if requested != "budget_sensitivity":
+        hinted = [k for k in changed if any(h in k for h in _BUDGET_HINTS)]
+        if hinted:
+            reasons.append(
+                f"{', '.join(hinted)} looks like a budget the report does not track, so equal "
+                "budgets cannot be confirmed"
+            )
+    return reasons
 
 
 def environment_drift(runs: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -363,7 +455,7 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
     per_sample: dict[str, dict[str, str]] = {i: {} for i in sample_ids}
     # Per condition: fraction of its runs that solved each sample.
     rates: dict[str, dict[str, float]] = {}
-    for condition in spec.conditions:
+    for condition_index, condition in enumerate(spec.conditions):
         label_runs = sorted(runs[condition.label], key=lambda r: r["repeat"])
         summaries = [_run_summary(r["results"]) for r in label_runs]
         totals: Counter[str] = Counter()
@@ -376,6 +468,8 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         first = label_runs[0]["manifest"] if label_runs else {}
         conditions[condition.label] = {
             "params": spec.params_for(condition),
+            "experiment_type": experiment_type(spec, condition) if condition_index else None,
+            "budgets": budgets(first, task_name) if first else None,
             "runs": [
                 {
                     "repeat": r["repeat"],
@@ -396,6 +490,7 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
             "mean_output_tokens": _mean([s["output_tokens"] for s in summaries]),
             "mean_wall_time_s": _mean(walls),
             "mean_steps": _mean([s["mean_steps"] for s in summaries]),
+            "steps_without_tool_calls": sum(s["steps_without_tool_calls"] for s in summaries),
             "outcomes": {o.value: totals.get(o.value, 0) for o in Outcome},
             "finish_reasons": dict(finish.most_common()),
             "cached_outputs": sum(s["cached_outputs"] for s in summaries),
@@ -452,9 +547,50 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         if runs[c.label] and base_manifest
     }
 
+    types = {c["experiment_type"] for c in conditions.values() if c["experiment_type"]}
+    kind = types.pop() if len(types) == 1 else "mixed"
+    recorded = [c["budgets"] for c in conditions.values() if c["budgets"] is not None]
+    equal_budget = len(recorded) == len(conditions) and all(b == recorded[0] for b in recorded)
+
+    # Shared reasons first, then per condition: what the records rule out.
+    reasons = []
+    if not complete:
+        reasons.append("some runs are missing or did not complete")
+    if not same_samples:
+        reasons.append("runs did not all evaluate the same samples")
+    if repeat_changes:
+        reasons.append("repeats of a condition were configured differently")
+    if drift:
+        reasons.append("the sandbox environment differed between runs")
+    base_budget = conditions[baseline]["budgets"]
+    for c in spec.conditions[1:]:
+        entry = conditions[c.label]
+        changed = changed_params(spec, c)
+        own = interpret(
+            entry["experiment_type"],
+            changed,
+            entry["budgets"],
+            base_budget,
+            _extra_changes(condition_changes.get(c.label, []), changed),
+        )
+        entry["interpretation"] = {
+            "supported": "inconclusive" if own else entry["experiment_type"],
+            "reasons": own,
+        }
+        reasons += [f"{c.label}: {r}" for r in own]
+    supported = "inconclusive" if reasons else kind
+
     return {
         "kind": spec.kind,
         "note": NOTES[spec.kind],
+        # What the spec asks for, judged from the parameters it changes ...
+        "experiment_type": kind,
+        # ... and what the recorded runs support; the note describes the latter.
+        "interpretation": {"supported": supported, "reasons": reasons},
+        "experiment_note": EXPERIMENT_NOTES[supported],
+        # Every condition ran with the same max_steps, time, token and command limits. A solver
+        # comparison or mechanism ablation without equal budgets is confounded by them.
+        "equal_budget": equal_budget,
         "task": task_name,
         "model": spec.model,
         "generate": spec.generate.model_dump(),

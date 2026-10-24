@@ -50,6 +50,14 @@ def sample_dirname(sample_id: str, epoch: int = 1) -> str:
     return name if epoch == 1 else f"{name}-e{epoch}"
 
 
+class TokenLimitReached(BaseException):
+    """Raised from ``generate`` when the sample's token budget is used up.
+
+    A BaseException so that solvers' ``except Exception`` handlers (e.g. mini-swe-agent's) do
+    not turn it into an ordinary error; the runner catches it and scores the partial work.
+    """
+
+
 def cache_namespace(namespace: str | None, epoch: int) -> str | None:
     """Cache namespace of one epoch. Epochs never share cached outputs, while re-running the
     same epoch (e.g. resuming an interrupted run) does. Epoch 1 without a namespace keeps the
@@ -133,14 +141,32 @@ async def run_samples(
         def count_attempt(_: int) -> None:
             result.attempts += 1
 
+        spent = Usage()
+        # With a token budget, checking, calling and counting happen one call at a time, so
+        # concurrent calls from one solver cannot all pass the check before any is counted.
+        budget_lock = asyncio.Lock() if task.token_limit is not None else None
+
         async def generate(
             messages: list[Message], tools: list[dict[str, Any]] | None = None
         ) -> ModelOutput:
+            if budget_lock is None:
+                return await call_model(messages, tools)
+            async with budget_lock:
+                # Replayed responses count too, so a resumed run stops where the original did.
+                if spent.total >= task.token_limit:
+                    raise TokenLimitReached(f"{spent.total} >= {task.token_limit} tokens")
+                return await call_model(messages, tools)
+
+        async def call_model(
+            messages: list[Message], tools: list[dict[str, Any]] | None
+        ) -> ModelOutput:
+            nonlocal spent
             key = cache_key(model_spec, messages, config, tools, key_namespace)
             if cache is not None and (hit := cache.get(key)) is not None:
                 if (identity := hit.served_identity()) is not None:
                     served_cached.add(identity)
                 result.calls.cached += 1
+                spent += hit.usage
                 return hit.model_copy(update={"cached": True})
             try:
                 out = await retry_async(
@@ -158,6 +184,7 @@ async def run_samples(
                 served.add(identity)
             result.calls.fresh += 1
             result.calls.fresh_usage += out.usage
+            spent += out.usage
             if cache is not None:
                 cache.put(key, out)
             return out
@@ -178,9 +205,12 @@ async def run_samples(
             except TimeoutError:
                 if not timer.expired():
                     raise
-            # Cancelled by the time limit: score whatever state the solver left behind.
+                reason = "time_limit"
+            except TokenLimitReached:
+                reason = "token_limit"
+            # Stopped by a budget: score whatever state the solver left behind.
             usage = sum((s.usage for s in trajectory.steps), Usage())
-            output = ModelOutput(text="", finish_reason="time_limit", usage=usage)
+            output = ModelOutput(text="", finish_reason=reason, usage=usage)
             return SolveResult(messages=trajectory.messages, output=output, steps=trajectory.steps)
 
         async def close(sandbox: Sandbox) -> None:

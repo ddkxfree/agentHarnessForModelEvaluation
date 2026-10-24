@@ -344,6 +344,16 @@ def diff(run_a: Path, run_b: Path, show_ids: Annotated[int, typer.Option()] = 10
 def _print_comparison(report: dict[str, Any]) -> None:
     console.rule(f"{report['kind']}: {report['task']} with {report['model']}")
     console.print(report["note"])
+    if "interpretation" in report:
+        supported = report["interpretation"]["supported"]
+        console.print(f"requested: {report['experiment_type']}; supported: {supported}")
+        console.print(report["experiment_note"])
+        for reason in report["interpretation"]["reasons"]:
+            console.print(f"[yellow]- {reason}[/]")
+        console.print("budgets:")
+        for label, c in report["conditions"].items():
+            budget = ", ".join(f"{k}={v}" for k, v in (c.get("budgets") or {}).items())
+            console.print(f"  {label}: {budget or 'not recorded'}")
     table = Table(title=f"{report['repeats']} repeat(s) per condition")
     cols = ["condition", "accuracy (min-max)", "in tok", "out tok", "wall s", "steps"]
     for col in [*cols, "outcomes", "finish reasons"]:
@@ -411,6 +421,11 @@ def compare(
     resume: Annotated[
         Path | None, typer.Option(help="Finish an interrupted comparison directory")
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", "-m", help="Override the spec's model (provider/name)"),
+    ] = None,
+    base_url: Annotated[str | None, typer.Option(help="Override the spec's base_url")] = None,
 ) -> None:
     """Run each condition of a comparison several times and report them side by side."""
     from harness.analysis.compare import CompareSpec, resume_comparison, run_comparison
@@ -420,10 +435,14 @@ def compare(
     if (config is None) == (resume is None):
         raise typer.BadParameter("pass either --config or --resume")
     if resume is not None:
+        if model is not None or base_url is not None:
+            raise typer.BadParameter("a resumed comparison keeps its recorded model")
         spec = CompareSpec.model_validate(read_json(resume / "index.json")["spec"])
     else:
         assert config is not None
         spec = CompareSpec.from_yaml(config)
+        overrides = {k: v for k, v in {"model": model, "base_url": base_url}.items() if v}
+        spec = spec.model_copy(update=overrides)
     llm = get_model(spec.model, base_url=spec.base_url)
     sandbox_provider = None
     if get_task(spec.task, **spec.params_for(spec.conditions[0])).sandbox is not None:
