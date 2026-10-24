@@ -161,14 +161,20 @@ def _print_sample(r: SampleResult, full: bool) -> None:
     console.print(f"target={r.sample.target!r}  extracted={extracted!r}  method={method}")
     if r.error:
         console.print(f"[red]{r.error}[/]")
+    if r.cleanup_error:
+        console.print(f"[red]sandbox cleanup failed: {r.cleanup_error}[/]  {r.sandbox}")
+    artifacts = {a.name: a for a in r.artifacts}
     for step in r.steps:
         tokens = step.usage.input_tokens + step.usage.output_tokens
         console.print(f"[bold cyan]step {step.index}[/]  ({tokens} tokens)")
         if step.text.strip():
             plain(step.text)
-        for call, obs in zip(step.tool_calls, step.observations, strict=False):
+        raw = step.raw_outputs or [None] * len(step.observations)
+        for call, obs, raw_name in zip(step.tool_calls, step.observations, raw, strict=False):
             plain(f"$ {call.name} {call.arguments}")
             plain(obs)
+            if raw_name and (a := artifacts.get(raw_name)):
+                console.print(f"[dim]full output ({a.size} bytes): artifacts/{a.path}[/]")
     if not r.steps:
         plain(r.output.text if r.output else "")
     if r.score:

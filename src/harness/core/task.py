@@ -30,6 +30,9 @@ class Task:
     params: dict[str, Any] = field(default_factory=dict)
     # When set, every sample gets its own sandbox built from this spec.
     sandbox: Callable[[Sample], SandboxSpec] | None = None
+    # Wall-clock budget in seconds for the solver on one sample. When it runs out the solver is
+    # cancelled, the work so far is scored and an unsolved sample is reported as time_limit.
+    time_limit: float | None = None
 
 
 TaskFactory = Callable[..., Task]

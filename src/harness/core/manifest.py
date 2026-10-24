@@ -69,6 +69,7 @@ def task_entry(task: Task, samples: list[Sample]) -> dict[str, Any]:
         "dataset": task.dataset.model_dump(),
         "solver": task.solver.describe(),
         "scorer": task.scorer.describe(),
+        "time_limit": task.time_limit,
         "n_samples": len(samples),
         "sample_ids_sha256": fingerprint([s.id for s in samples]),
     }

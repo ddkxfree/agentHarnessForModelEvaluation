@@ -56,6 +56,7 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
             "output": sum(o.usage.output_tokens for o in outputs),
         },
         "cached": sum(o.cached for o in outputs),
+        "cleanup_errors": sum(r.cleanup_error is not None for r in results),
         "mean_latency_s": sum(fresh) / len(fresh) if fresh else None,
         "agent": agent,
     }

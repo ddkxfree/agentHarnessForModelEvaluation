@@ -104,6 +104,32 @@ def test_untouched_environment_fails_every_builtin_terminal_task():
     assert [r.outcome for r in results] == [Outcome.WRONG] * len(results)
 
 
+@pytest.mark.parametrize("solver", ["agent", "mini"])
+def test_time_limit_stops_a_hung_agent_and_removes_its_container(solver):
+    if solver == "mini":
+        pytest.importorskip("minisweagent")
+    import time
+
+    from fakes import call, scripted, tool_turn
+
+    from harness.sandbox.docker import LABEL, DockerProvider
+
+    task = get_task("terminal", solver=solver, ids=["hello-file"], time_limit=3)
+    model = scripted(tool_turn(call("bash", '{"command": "sleep 600"}')))
+    provider = DockerProvider()
+    start = time.monotonic()
+    [r] = asyncio.run(
+        run_samples(task, task.load(), model, GenerateConfig(), sandbox_provider=provider)
+    )
+    assert time.monotonic() - start < 60
+    assert r.outcome == Outcome.TIME_LIMIT, (r.error, r.score)
+    assert r.cleanup_error is None
+    assert r.sandbox["image_id"].startswith("sha256:")
+    assert r.sandbox["image"].startswith("harness-sandbox:")
+    left = provider.client.containers.list(all=True, filters={"label": LABEL})
+    assert r.sandbox["container_id"] not in {c.id for c in left}
+
+
 SWEBENCH_ID = "pytest-dev__pytest-5227"
 SWEBENCH_IMAGE = "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-5227:latest"
 

@@ -82,6 +82,16 @@ class DockerSandbox(Sandbox):
     async def close(self) -> None:
         await _docker(self._container.remove, force=True)
 
+    def describe(self) -> dict[str, Any]:
+        attrs = self._container.attrs or {}
+        return {
+            "type": "docker",
+            "container_id": self._container.id,
+            "container_name": self._container.name,
+            "image": attrs.get("Config", {}).get("Image"),
+            "image_id": attrs.get("Image"),
+        }
+
 
 class DockerProvider(SandboxProvider):
     name = "docker"

@@ -1,10 +1,12 @@
 import asyncio
+import threading
+import time
 
 import pytest
 
 pytest.importorskip("minisweagent")
 
-from fakes import call, scripted, tool_turn  # noqa: E402
+from fakes import FakeProvider, FakeSandbox, call, scripted, tool_turn  # noqa: E402
 
 from harness.core.model import MockModel  # noqa: E402
 from harness.core.types import GenerateConfig, Outcome, Sample, classify  # noqa: E402
@@ -71,7 +73,9 @@ def test_submission_becomes_output_and_steps_are_recorded():
     assert result.output.text == PATCH
     assert result.output.finish_reason == "submit"
     assert [s.text for s in result.steps] == ["look around", "submit"]
-    assert result.steps[0].observations == ["ran ls\n"]
+    assert result.steps[0].observations == [result.messages[3]["content"]]
+    assert "ran ls\n" in result.steps[0].observations[0]
+    assert result.steps[0].raw_outputs == [None]
     assert result.steps[0].exit_codes == [0]
     assert seen_tools[0][0]["function"]["name"] == "bash"
     assert all("extra" not in m for m in result.messages)
@@ -169,6 +173,125 @@ def test_model_call_failures_through_the_bridge_are_api_errors():
     )
     assert r.outcome == Outcome.API_ERROR
     assert r.error == "ValueError: provider down"
+
+
+class BlockingSandbox(FakeSandbox):
+    """The agent's ``sleep 999`` blocks until cancelled; everything else is a FakeSandbox."""
+
+    def __init__(self):
+        super().__init__()
+        self.cancelled = False
+
+    async def exec(self, cmd, *, timeout=60.0):
+        if cmd.splitlines()[-1] == "sleep 999":
+            self.commands.append(cmd)
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        return await super().exec(cmd, timeout=timeout)
+
+
+class HangingModel(MockModel):
+    """The first call returns a command; the second never returns."""
+
+    async def generate(self, messages, config, tools=None):
+        if self.calls:
+            self.calls += 1
+            await asyncio.sleep(3600)
+        return await super().generate(messages, config, tools)
+
+
+@pytest.fixture
+def worker_finished(monkeypatch):
+    """Set once mini-swe-agent's ``DefaultAgent.run`` has returned or raised in its thread."""
+    from minisweagent.agents.default import DefaultAgent
+
+    finished = threading.Event()
+    original = DefaultAgent.run
+
+    def run(self, *args, **kwargs):
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(DefaultAgent, "run", run)
+    return finished
+
+
+def run_mini_with_time_limit(model, provider, time_limit=0.3):
+    from harness.core.runner import run_samples
+    from harness.core.task import get_task
+
+    task = get_task("terminal", solver="mini", ids=["hello-file"])
+    task.time_limit = time_limit
+    (r,) = asyncio.run(
+        run_samples(task, task.load(), model, GenerateConfig(), sandbox_provider=provider)
+    )
+    return r
+
+
+@pytest.mark.parametrize("blocked_in", ["command", "model_call"])
+def test_time_limit_stops_the_worker_thread(blocked_in, worker_finished):
+    sleep = tool_turn(call("bash", '{"command": "sleep 999"}'), text="waiting")
+    ls = tool_turn(call("bash", '{"command": "ls"}'), text="look")
+    if blocked_in == "command":
+        model = scripted(ls, sleep)
+    else:
+        model = HangingModel(lambda messages: ls)
+    provider = FakeProvider(sandbox_cls=BlockingSandbox)
+    provider.test_exit_code = 1
+    start = time.monotonic()
+    r = run_mini_with_time_limit(model, provider)
+
+    assert time.monotonic() - start < 5
+    # The solver returned only after the thread stopped, so nothing can touch the sandbox now.
+    assert worker_finished.is_set()
+    calls, commands = model.calls, list(provider.created[0].commands)
+    time.sleep(0.2)
+    assert (model.calls, provider.created[0].commands) == (calls, commands)
+    assert r.outcome == Outcome.TIME_LIMIT and r.error is None
+    assert r.steps[0].text == "look" and r.steps[0].exit_codes == [127]
+    assert [m["role"] for m in r.messages][:4] == ["system", "user", "assistant", "tool"]
+    sandbox = provider.created[0]
+    assert sandbox.closed and commands[-1] == "bash /tests/test.sh"
+    if blocked_in == "command":
+        assert sandbox.cancelled and len(r.steps) == 2
+    else:
+        assert model.calls == 2 and len(r.steps) == 1
+
+
+def test_worker_that_does_not_stop_is_a_solver_error(monkeypatch):
+    from minisweagent.agents.default import DefaultAgent
+
+    monkeypatch.setattr(DefaultAgent, "run", lambda self, task: time.sleep(1.0) or {})
+    monkeypatch.setattr(MiniSweAgent, "__init__", _with_grace(MiniSweAgent.__init__, 0.05))
+    provider = FakeProvider(sandbox_cls=BlockingSandbox)
+    r = run_mini_with_time_limit(scripted("unused"), provider, time_limit=0.1)
+    assert r.outcome == Outcome.SOLVER_ERROR
+    assert "did not stop within 0.05s" in r.error
+    assert provider.created[0].closed
+
+
+def _with_grace(init, grace):
+    def patched(self, **kwargs):
+        init(self, **kwargs)
+        self.cancel_grace = grace
+
+    return patched
+
+
+def test_truncated_observations_are_kept_as_artifacts():
+    big = "x" * 30000
+    model = scripted(tool_turn(call("bash", '{"command": "big"}')))
+    sandbox = ScriptSandbox({"big": ExecResult(exit_code=0, stdout=big, stderr="")})
+    result, _ = solve(model, sandbox, max_steps=1)
+    step = result.steps[0]
+    assert big not in step.observations[0]
+    assert step.observations[0] == result.messages[3]["content"]
+    assert step.raw_outputs == ["step-0-call-0.txt"]
 
 
 def test_describe_is_stable_and_reflects_settings():
