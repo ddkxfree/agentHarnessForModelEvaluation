@@ -166,6 +166,14 @@ class SampleResult(BaseModel):
     cleanup_error: str | None = None
     # Scoring states replaced by `harness rescore`, oldest first.
     rescore_history: list[dict[str, Any]] = Field(default_factory=list)
+    # Seconds from sandbox creation to cleanup, excluding time queued for a concurrency slot.
+    wall_time_s: float | None = None
+
+    def usage(self) -> Usage:
+        """Tokens spent on the sample, including steps of a solver that failed midway."""
+        if self.steps:
+            return sum((s.usage for s in self.steps), Usage())
+        return self.output.usage if self.output else Usage()
 
 
 def classify(result: SampleResult) -> Outcome:

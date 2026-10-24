@@ -1,0 +1,27 @@
+# Baseline agent vs mini-swe-agent on the built-in terminal tasks (needs Docker):
+#   ollama pull qwen2.5:3b-instruct
+#   harness run -m none/none -t terminal -p terminal.solver=oracle   # tasks are sound
+#   harness compare -c configs/compare-terminal-ollama.yaml
+#   harness compare-report runs/compare-...                          # rebuild the report offline
+kind: solver_comparison
+model: ollama/qwen2.5:3b-instruct
+task: terminal
+params:
+  max_steps: 10
+  command_timeout: 60
+  time_limit: 600
+conditions:
+  - label: basic
+    params: {solver: agent}
+  - label: mini
+    params: {solver: mini}
+repeats: 3
+generate:
+  temperature: 0.0
+  max_tokens: 512
+  seed: 0
+  timeout: 300
+# One sample at a time: the local server answers one request at a time, so parallel samples
+# would mostly add queueing to the measured wall time.
+concurrency: 1
+cache_policy: never

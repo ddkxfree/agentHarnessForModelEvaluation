@@ -31,7 +31,8 @@
 - 加固第二轮（失败可追踪）已实现，待复评：见 [07](progress/07-traceability.md)。
 - 加固第三轮（独立复核）已实现，待复评：见 [08](progress/08-independent-verification.md)。
 - 加固第四轮（真实 Terminal-Bench 2.0，5 题）已实现，待复评：见 [09](progress/09-terminal-bench.md)。
-- 191 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
+- 加固第五轮（Solver 对照，`harness compare`）已实现并在自建终端任务上实测，待复评：见 [10](progress/10-solver-comparison.md)。
+- 210 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
@@ -39,7 +40,7 @@
 2. 失败可追踪：中途异常保留轨迹、完成样本及时落盘、清理失败要记录、单题总时长限制。已实现（[07](progress/07-traceability.md)），待复评。
 3. 独立复核：完整产物、环境身份（镜像 digest、服务端模型版本）、新容器评分、SWE-bench 不调模型重评。已实现（[08](progress/08-independent-verification.md)），待复评。
 4. 接入真实 Terminal-Bench（固定版本，3～5 题；Oracle 全过、不操作全失败；不改 core）。已实现（[09](progress/09-terminal-bench.md)），待复评。
-5. 有意义的 Solver 对照：固定模型、样本、预算和缓存策略，记录成功率、token、耗时和失败归类。
+5. 有意义的 Solver 对照：固定模型、样本、预算和缓存策略，记录成功率、token、耗时和失败归类。已实现（[10](progress/10-solver-comparison.md)），待复评；Terminal-Bench／SWE-bench 上的对照尚未运行。
 
 缓存复用策略已在第 3 轮明确（`cache_policy: auto`，temperature > 0 时默认不复用），完整的多轮次 epochs 留到阶段 7。
 
