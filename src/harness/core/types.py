@@ -158,6 +158,9 @@ class SampleResult(BaseModel):
     artifacts: list[Artifact] = Field(default_factory=list)
     # Served model identities reported by the server, over all of the sample's model calls.
     served_models: list[str] = Field(default_factory=list)
+    # Identities recorded with outputs replayed from the cache. They say which server produced
+    # those responses originally, not what the server serves now.
+    cached_served_models: list[str] = Field(default_factory=list)
     # Identity of the sandbox the sample ran in, e.g. container and image ids.
     sandbox: dict[str, Any] | None = None
     # The fresh sandbox a SubmissionScorer graded in, if any.

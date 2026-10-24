@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from harness.analysis import environment
 from harness.analysis.rescore import apply_rescore, reached_scoring
 from harness.analysis.stats import summarize
 from harness.core.io import read_json, read_results, write_json, write_results
@@ -60,6 +61,11 @@ async def _verify_sample(
         with recording(trajectory):
             grader = await provider.create(task.sandbox(r.sample), labels=labels)
             row["grading_sandbox"] = grader.describe()
+            # A matching grade in a different image is not a reproduction of the original.
+            row["environment_changes"] = environment.changes(
+                environment.identity(r.grading_sandbox or r.sandbox),
+                environment.identity(row["grading_sandbox"]),
+            )
             new = check_score(await task.scorer.grade(r.sample, data.decode(), grader))
     except SandboxError as exc:
         row["status"], row["error"] = "env_error", f"{type(exc).__name__}: {exc}"
@@ -126,6 +132,9 @@ async def verify_run(
             "n": len(rows),
             "statuses": dict(Counter(row["status"] for row in rows).most_common()),
             "disagreements": [row["sample_id"] for row in rows if row["status"] == "disagree"],
+            "environment_changed": [
+                row["sample_id"] for row in rows if row.get("environment_changes")
+            ],
             "scorer_fingerprint": {"recorded": recorded_fp, "current": current["fingerprint"]},
         }
         if update:

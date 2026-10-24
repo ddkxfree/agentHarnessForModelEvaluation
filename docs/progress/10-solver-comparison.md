@@ -58,8 +58,8 @@
 
 观察：
 
-- mini-swe-agent 的失败几乎都是 `RepeatedFormatError`：3B 模型不能稳定输出 mini 要求的单个 bash 代码块格式。这是"模型 + 协议"的组合结果，不能说明 mini 的策略更差；需要更强的模型才能比较策略本身。
-- temperature 0、seed 0 下，同一条件的 3 次重复步数和耗时仍不同（如 basic 的 `fix-mean` 为 7／7／4 步），Ollama 在 CPU 上并非逐位确定。因此重复是有意义的。
+- mini-swe-agent 的失败几乎都是 `RepeatedFormatError`。~~3B 模型不能稳定输出 mini 要求的单个 bash 代码块格式。~~（归因有误，已在 [12](12-stage5-followup-fixes.md) 更正：桥接使用结构化 tool_calls，不是代码块；实际原因是模型把 mini 提示词中的示例占位文字当作回复照抄，没有发出工具调用。）这是"模型 + 协议"的组合结果，不能说明 mini 的策略更差；需要更强的模型才能比较策略本身。
+- temperature 0、seed 0 下，同一条件的 3 次重复步数和耗时仍不同（如 basic 的 `fix-mean` 为 7／7／4 步）。这是观测事实；原因未定位，可能是 Ollama 的数值非确定性、任务初态（如生成的数据）或服务端实现（见 [12](12-stage5-followup-fixes.md)）。无论原因，重复都是有必要的。
 - `config_changes_vs_baseline` 列出 mini 与 basic 的全部差异（提示词模板、步数上限的实现、观测截断、环境变量等），印证这是整体对照而非单变量消融。
 - 样本只有 3 个，不做显著性结论；置信区间和多轮统计留到阶段 7。
 

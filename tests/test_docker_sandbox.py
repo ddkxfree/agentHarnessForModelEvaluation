@@ -79,6 +79,39 @@ def test_missing_image_is_sandbox_error():
         asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("when", ["image_info_fails", "cancelled_while_starting"])
+def test_create_never_leaves_a_container_behind(when, monkeypatch):
+    from harness.sandbox.docker import LABEL, DockerProvider
+
+    provider = DockerProvider()
+    marker = {"harness.test-create": when}
+
+    def leftovers():
+        filters = {"label": [LABEL, f"harness.test-create={when}"]}
+        return provider.client.containers.list(all=True, filters=filters)
+
+    async def scenario():
+        create = provider.create(SandboxSpec(image=IMAGE), labels=marker)
+        if when == "image_info_fails":
+
+            def fail(image):
+                raise RuntimeError("metadata lookup failed")
+
+            monkeypatch.setattr(provider, "_image_info", fail)
+            with pytest.raises(RuntimeError, match="metadata lookup failed"):
+                await create
+        else:
+            task = asyncio.create_task(create)
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await provider.drain()
+
+    asyncio.run(scenario())
+    assert leftovers() == []
+
+
 def test_oracle_solves_every_builtin_terminal_task():
     from harness.sandbox.docker import DockerProvider
 

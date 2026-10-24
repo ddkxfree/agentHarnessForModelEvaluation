@@ -15,5 +15,6 @@
 | [09](09-terminal-bench.md) | 接入真实 Terminal-Bench 2.0：固定提交与镜像 digest 的 5 道题，按 Harbor 流程判分，Oracle 5/5、不操作 0/5 | 阶段 5 加固第四轮 |
 | [10](10-solver-comparison.md) | Solver 对照：`harness compare` 固定条件重复运行，3B 模型下 BasicAgent 0.33、mini-swe-agent 0.11 | 阶段 5 加固第五轮 |
 | [11](11-stage5-review-and-next.md) | 审查已缓存的 PR #6～#10：创建失败清理、缓存身份、环境漂移；本地试运行与下一阶段 | 阶段 5 累积复评；07～10 的源码在远端分支快照中审查 |
+| [12](12-stage5-followup-fixes.md) | 补修 N1～N4：创建失败与取消时删除容器、缓存身份单独记录、compare／verify 报告实际环境漂移、mini 失败归因更正 | 阶段 5 补修 |
 
 想在自己电脑上跑起来，见 [上手练习指南](../hands-on.md)。
