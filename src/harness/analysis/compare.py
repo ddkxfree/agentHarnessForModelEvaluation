@@ -61,7 +61,15 @@ EXPERIMENT_NOTES = {
         "can be attributed to that mechanism (within the statistical uncertainty)."
     ),
     "mixed": "Some conditions change a budget and others a mechanism; read them separately.",
+    "inconclusive": (
+        "The recorded runs do not support attributing the differences to the changed "
+        "parameter (see interpretation.reasons); the numbers are shown for inspection only."
+    ),
 }
+
+# Parameter names that suggest a budget the report does not know how to read; changing one
+# keeps the budgets from being confirmed equal.
+_BUDGET_HINTS = ("budget", "limit", "timeout", "steps")
 
 
 class Condition(BaseModel):
@@ -327,8 +335,12 @@ def _relevant_changes(a: dict[str, Any], b: dict[str, Any]) -> list[list[Any]]:
 
 
 def budgets(manifest: dict[str, Any], task_name: str) -> dict[str, Any]:
-    """The budgets a run actually used, read from its manifest."""
-    entry = next((t for t in manifest.get("tasks", []) if t.get("name") == task_name), {})
+    """The budgets a run actually used, read from its manifest; None when the manifest does not
+    record them (no such task, or written before token budgets existed). A budget of None
+    means the task has no such limit."""
+    entry = next((t for t in manifest.get("tasks", []) if t.get("name") == task_name), None)
+    if entry is None or "token_limit" not in entry:
+        return None
     params = entry.get("params") or {}
     return {
         "max_steps": params.get("max_steps"),
@@ -338,11 +350,54 @@ def budgets(manifest: dict[str, Any], task_name: str) -> dict[str, Any]:
     }
 
 
+def changed_params(spec: CompareSpec, condition: Condition) -> list[str]:
+    return sorted(k for k, v in condition.params.items() if spec.params.get(k, _MISSING) != v)
+
+
 def experiment_type(spec: CompareSpec, condition: Condition) -> str:
+    """The kind of experiment the spec asks for, judged from the parameter it changes."""
     if spec.kind == "solver_comparison":
         return "solver_comparison"
-    changed = [k for k, v in condition.params.items() if spec.params.get(k, _MISSING) != v]
+    changed = changed_params(spec, condition)
     return "budget_sensitivity" if set(changed) & set(BUDGET_KEYS) else "mechanism_ablation"
+
+
+def _extra_changes(changes: list[list[Any]], changed: list[str]) -> list[str]:
+    """Manifest differences that do not follow from the condition's own parameters. Every
+    condition's task comes from the same factory, so differences inside the task entry are
+    consequences of the changed parameter (derived budgets are checked separately); anything
+    else (model, generation settings, harness version, ...) confounds the comparison."""
+    expected = {f"run_config.params.{k}" for k in changed}
+    return [key for key, _, _ in changes if not key.startswith("tasks.") and key not in expected]
+
+
+def interpret(
+    requested: str,
+    changed: list[str],
+    budget: dict[str, Any] | None,
+    base_budget: dict[str, Any] | None,
+    extra_changes: list[str],
+) -> list[str]:
+    """Reasons the recorded runs of one condition do not support the requested reading."""
+    reasons = []
+    if extra_changes:
+        reasons.append(f"also differs from the baseline in {', '.join(extra_changes)}")
+    if budget is None or base_budget is None:
+        reasons.append("budgets are not recorded, so they cannot be confirmed")
+    else:
+        differ = sorted(k for k in BUDGET_KEYS if budget[k] != base_budget[k])
+        allowed = set(changed) if requested == "budget_sensitivity" else set()
+        if unintended := [k for k in differ if k not in allowed]:
+            values = ", ".join(f"{k} {base_budget[k]} -> {budget[k]}" for k in unintended)
+            reasons.append(f"budgets differ from the baseline: {values}")
+    if requested != "budget_sensitivity":
+        hinted = [k for k in changed if any(h in k for h in _BUDGET_HINTS)]
+        if hinted:
+            reasons.append(
+                f"{', '.join(hinted)} looks like a budget the report does not track, so equal "
+                "budgets cannot be confirmed"
+            )
+    return reasons
 
 
 def environment_drift(runs: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -497,11 +552,42 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
     recorded = [c["budgets"] for c in conditions.values() if c["budgets"] is not None]
     equal_budget = len(recorded) == len(conditions) and all(b == recorded[0] for b in recorded)
 
+    # Shared reasons first, then per condition: what the records rule out.
+    reasons = []
+    if not complete:
+        reasons.append("some runs are missing or did not complete")
+    if not same_samples:
+        reasons.append("runs did not all evaluate the same samples")
+    if repeat_changes:
+        reasons.append("repeats of a condition were configured differently")
+    if drift:
+        reasons.append("the sandbox environment differed between runs")
+    base_budget = conditions[baseline]["budgets"]
+    for c in spec.conditions[1:]:
+        entry = conditions[c.label]
+        changed = changed_params(spec, c)
+        own = interpret(
+            entry["experiment_type"],
+            changed,
+            entry["budgets"],
+            base_budget,
+            _extra_changes(condition_changes.get(c.label, []), changed),
+        )
+        entry["interpretation"] = {
+            "supported": "inconclusive" if own else entry["experiment_type"],
+            "reasons": own,
+        }
+        reasons += [f"{c.label}: {r}" for r in own]
+    supported = "inconclusive" if reasons else kind
+
     return {
         "kind": spec.kind,
         "note": NOTES[spec.kind],
+        # What the spec asks for, judged from the parameters it changes ...
         "experiment_type": kind,
-        "experiment_note": EXPERIMENT_NOTES[kind],
+        # ... and what the recorded runs support; the note describes the latter.
+        "interpretation": {"supported": supported, "reasons": reasons},
+        "experiment_note": EXPERIMENT_NOTES[supported],
         # Every condition ran with the same max_steps, time, token and command limits. A solver
         # comparison or mechanism ablation without equal budgets is confounded by them.
         "equal_budget": equal_budget,

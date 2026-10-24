@@ -344,10 +344,13 @@ def diff(run_a: Path, run_b: Path, show_ids: Annotated[int, typer.Option()] = 10
 def _print_comparison(report: dict[str, Any]) -> None:
     console.rule(f"{report['kind']}: {report['task']} with {report['model']}")
     console.print(report["note"])
-    if "experiment_type" in report:
-        console.print(f"experiment type: {report['experiment_type']}. {report['experiment_note']}")
-        if not report["equal_budget"] and report["experiment_type"] != "budget_sensitivity":
-            console.print("[yellow]conditions ran with different budgets:[/]")
+    if "interpretation" in report:
+        supported = report["interpretation"]["supported"]
+        console.print(f"requested: {report['experiment_type']}; supported: {supported}")
+        console.print(report["experiment_note"])
+        for reason in report["interpretation"]["reasons"]:
+            console.print(f"[yellow]- {reason}[/]")
+        console.print("budgets:")
         for label, c in report["conditions"].items():
             budget = ", ".join(f"{k}={v}" for k, v in (c.get("budgets") or {}).items())
             console.print(f"  {label}: {budget or 'not recorded'}")

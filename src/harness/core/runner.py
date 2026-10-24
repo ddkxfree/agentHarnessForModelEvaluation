@@ -142,14 +142,25 @@ async def run_samples(
             result.attempts += 1
 
         spent = Usage()
+        # With a token budget, checking, calling and counting happen one call at a time, so
+        # concurrent calls from one solver cannot all pass the check before any is counted.
+        budget_lock = asyncio.Lock() if task.token_limit is not None else None
 
         async def generate(
             messages: list[Message], tools: list[dict[str, Any]] | None = None
         ) -> ModelOutput:
+            if budget_lock is None:
+                return await call_model(messages, tools)
+            async with budget_lock:
+                # Replayed responses count too, so a resumed run stops where the original did.
+                if spent.total >= task.token_limit:
+                    raise TokenLimitReached(f"{spent.total} >= {task.token_limit} tokens")
+                return await call_model(messages, tools)
+
+        async def call_model(
+            messages: list[Message], tools: list[dict[str, Any]] | None
+        ) -> ModelOutput:
             nonlocal spent
-            # Replayed responses count too, so a resumed run stops where the original did.
-            if task.token_limit is not None and spent.total >= task.token_limit:
-                raise TokenLimitReached(f"{spent.total} >= {task.token_limit} tokens")
             key = cache_key(model_spec, messages, config, tools, key_namespace)
             if cache is not None and (hit := cache.get(key)) is not None:
                 if (identity := hit.served_identity()) is not None:
