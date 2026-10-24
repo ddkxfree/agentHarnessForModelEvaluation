@@ -1,0 +1,31 @@
+# Mechanism ablation (pending real validation): does BasicAgent do worse when each command's
+# output is cut to its head and tail, 500 characters in total instead of 4000? Everything
+# else, the budgets included, is the same in both conditions. Needs Docker and the pinned TB2 images:
+#   harness run -m none/none -t terminal-bench -p terminal-bench.solver=oracle   # tasks are sound
+#   harness compare -c configs/ablation-observation-terminal-bench.yaml          # local Ollama
+#   harness compare -c configs/ablation-observation-terminal-bench.yaml -m openai/gpt-4o-mini
+#   harness compare-report runs/compare-...
+# Only 5 tasks are pinned, so the paired difference is reported as too few samples for claims;
+# read it together with per_sample_solved and the trajectories.
+kind: ablation
+model: ollama/qwen2.5:3b-instruct
+task: terminal-bench
+params:
+  solver: agent
+  max_steps: 30
+  command_timeout: 120
+  time_limit: 900
+  token_limit: 200000
+  max_observation_chars: 4000
+conditions:
+  - label: obs4000
+  - label: obs500
+    params: {max_observation_chars: 500}
+repeats: 3
+generate:
+  temperature: 0.0
+  max_tokens: 1024
+  seed: 0
+  timeout: 300
+concurrency: 1
+cache_policy: always

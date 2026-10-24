@@ -41,6 +41,22 @@ SUBMIT_TOOL: dict[str, Any] = {
 }
 
 
+def agent_only(solver: str, **options: Any) -> None:
+    """Reject task options that only ``BasicAgent`` honours when another solver is chosen,
+    rather than silently ignoring them."""
+    if solver != "agent" and (given := sorted(k for k, v in options.items() if v is not None)):
+        raise ValueError(f"{', '.join(given)} only applies to solver 'agent', not {solver!r}")
+
+
+def observation_limit(max_observation_chars: int | None) -> dict[str, Any]:
+    """Keyword arguments for ``BasicAgent``; None keeps the task's default."""
+    if max_observation_chars is None:
+        return {}
+    if max_observation_chars < 1:
+        raise ValueError("max_observation_chars must be positive")
+    return {"max_observation_chars": max_observation_chars}
+
+
 class BasicAgent:
     """Minimal tool-calling loop used as a baseline and to exercise the sandbox pipeline.
 
@@ -196,3 +212,13 @@ class BasicAgent:
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc
+
+    def protocol(self) -> dict[str, Any]:
+        return {
+            "interface": "native_tool_calls",
+            "tools": [t["function"]["name"] for t in self.tools],
+            "finish": "submit tool call; a reply without a tool call also ends the episode",
+            "step": "one model call, then every tool call it made",
+            "observation": f"exit code and output, cut to {self.max_observation_chars} chars",
+            "requires": ["model tool calling", "sandbox"],
+        }

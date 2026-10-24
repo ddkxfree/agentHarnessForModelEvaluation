@@ -36,3 +36,15 @@ class OracleSolver:
         desc = {"name": self.name, "timeout": self.timeout}
         desc["fingerprint"] = fingerprint(desc)
         return desc
+
+    def protocol(self) -> dict[str, Any]:
+        return REFERENCE_PROTOCOL
+
+
+REFERENCE_PROTOCOL: dict[str, Any] = {
+    "interface": "reference_solution",
+    "tools": [],
+    "finish": "the reference solution ran",
+    "step": "no model calls",
+    "requires": ["sandbox"],
+}

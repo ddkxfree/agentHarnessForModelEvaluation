@@ -1,0 +1,26 @@
+# Budget sensitivity (pending real validation): how much of BasicAgent's score on the built-in
+# terminal tasks survives a smaller token budget? This measures the budget, not a mechanism.
+#   harness compare -c configs/budget-tokens-terminal.yaml                       # local Ollama
+#   harness compare -c configs/budget-tokens-terminal.yaml -m openai/gpt-4o-mini
+# Samples stopped by the budget are reported with outcome token_limit.
+kind: ablation
+model: ollama/qwen2.5:3b-instruct
+task: terminal
+params:
+  solver: agent
+  max_steps: 10
+  command_timeout: 60
+  time_limit: 600
+  token_limit: 40000
+conditions:
+  - label: tokens40k
+  - label: tokens8k
+    params: {token_limit: 8000}
+repeats: 3
+generate:
+  temperature: 0.0
+  max_tokens: 512
+  seed: 0
+  timeout: 300
+concurrency: 1
+cache_policy: always

@@ -33,6 +33,10 @@ class Task:
     # Wall-clock budget in seconds for the solver on one sample. When it runs out the solver is
     # cancelled, the work so far is scored and an unsolved sample is reported as time_limit.
     time_limit: float | None = None
+    # Token budget (input + output, over all model calls) for the solver on one sample. A call
+    # is refused once the budget is used up; the work so far is scored and an unsolved sample
+    # is reported as token_limit. The last allowed call may overshoot the budget.
+    token_limit: int | None = None
 
 
 TaskFactory = Callable[..., Task]

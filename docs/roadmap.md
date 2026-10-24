@@ -38,7 +38,8 @@
 - 加固第五轮（Solver 对照，`harness compare`）已实现并在自建终端任务上实测，待复评：见 [10](progress/10-solver-comparison.md)。
 - 11 的 N1～N4 已补修，待复评：见 [12](progress/12-stage5-followup-fixes.md)。PR #7～#10 原先只合并进叠加分支，由 PR #11 合入 master。
 - 阶段 7 最小版（重复实验、恢复、配对统计、失败报告）已实现，MockModel 测试通过，真实多 epoch 运行待验证：见 [13](progress/13-statistics-diagnostics.md)。复评发现 S1～S3，须补修后验收：见 [14](progress/14-stage7-review.md)。S1～S3 已补修，待复评：见 [15](progress/15-stage7-review-fixes.md)。
-- 238 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
+- 阶段 10 最小版（token 预算、Solver 协议记录、预算敏感性／机制消融分类）已实现，MockModel 测试通过，待复评；真实单变量消融（观察截断 4000 对 500）配置已备好，尚未运行，待本地或外部 API 验证：见 [16](progress/16-budget-ablation.md)。
+- 252 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
@@ -85,6 +86,13 @@
 2. ~~两个模型的配对比较与显著性检验（同一批题）。~~ 已实现：`diff` 与 `compare` 的配对差、bootstrap 区间、符号检验
 3. ~~`harness diff` 增加"可能原因"提示：配置变化、环境变化、输出完全相同但打分变化（说明是 scorer 改动）等。~~ 已实现：`likely_causes`
 4. ~~错误归类报告：自动抽样各类失败样本，生成 Markdown 报告。~~ 已实现：`harness report`
+
+### 阶段 10：Harness 对照与消融
+
+1. ~~单样本 token 预算，超出后保留已有工作并评分，outcome 记为 `token_limit`。~~ 已实现（[16](progress/16-budget-ablation.md)）
+2. ~~Solver 协议与能力记录（接口、工具、结束方式、步定义、依赖）写入 manifest。~~ 已实现：`solver_protocol`
+3. ~~compare 报告各条件预算，区分 Solver 对照、预算敏感性和机制消融。~~ 已实现：`budgets`、`equal_budget`、`experiment_type`
+4. 一次真实单变量机制消融（固定模型、样本、种子和预算，每条件 3 次）。配置已备好：`configs/ablation-observation-terminal-bench.yaml`，待本地或外部 API 运行
 
 ### 阶段 8：评测集接入 Agent 化
 
