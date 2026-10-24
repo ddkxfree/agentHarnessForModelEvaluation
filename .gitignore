@@ -10,3 +10,8 @@ build/
 # Run outputs and request cache are local artifacts
 runs/
 .cache/
+/.idea/pyLspTools.xml
+/.idea/vcs.xml
+/.idea/agent-harness.iml
+/.idea/modules.xml
+/.idea/inspectionProfiles/profiles_settings.xml

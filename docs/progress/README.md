@@ -8,5 +8,6 @@
 | [02](02-agent-sandbox.md) | Agent 评测与 Docker 沙箱：基线 Agent、轨迹记录、3 个终端任务、Oracle 校验 | 阶段 5 前半 |
 | [03](03-swebench-mini-swe-agent.md) | 接入 SWE-bench Lite 和 mini-swe-agent，用参考补丁校验判分 | 阶段 5 第 6、7 步 |
 | [04](04-correctness-diagnostics.md) | 失败分四类、分数校验、数字精确比较、提交校验、CI 触发分支 | 阶段 5 加固第一轮 |
+| [05](05-review-correctness-diagnostics.md) | 第一轮复评：NaN 漏判、长小数精度、重评状态；十阶段最小验收计划 | 阶段 5 复评与后续计划 |
 
 想在自己电脑上跑起来，见 [上手练习指南](../hands-on.md)。
