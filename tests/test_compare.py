@@ -8,7 +8,7 @@ from conftest import make_samples, question_number
 from pydantic import ValidationError
 
 from harness.analysis.compare import CompareSpec, build_report, run_comparison
-from harness.core.io import read_json, read_results, write_json
+from harness.core.io import read_json, read_results, write_json, write_results
 from harness.core.model import MockModel
 from harness.core.scorer import NumberMatchScorer
 from harness.core.solver import PromptSolver
@@ -121,6 +121,33 @@ def test_report_is_rebuilt_offline_and_flags_drift(tmp_path):
     assert drift["repeat"] == 2
     assert drift["changes"] == [["tasks.toy.generate_config.temperature", 0.0, 0.5]]
     assert not report["complete"]
+
+
+def test_actual_image_drift_is_reported_separately(tmp_path):
+    compare_dir, _ = run(tmp_path, spec(tmp_path))
+    index = read_json(compare_dir / "index.json")
+    for n, entry in enumerate(index["runs"]):
+        path = compare_dir / entry["run_dir"] / "toy" / "samples.jsonl"
+        results = read_results(path)
+        for r in results:
+            # the second plain repeat got a new image behind the same tag
+            image = "sha256:B" if (n == 2 and r.sample.id == "toy/1") else "sha256:A"
+            r.sandbox = {"image": "img:latest", "image_id": image, "container_id": f"c{n}"}
+        write_results(path, results)
+
+    report = build_report(compare_dir)
+    assert report["complete"] and report["same_samples_in_every_run"]
+    assert report["repeat_config_changes"] is False
+    [drift] = report["environment_drift"]
+    assert (drift["sample_id"], drift["field"]) == ("toy/1", "sandbox.image_id")
+    assert drift["values"]["plain#2"] == "sha256:B" and drift["values"]["plain#1"] == "sha256:A"
+    assert not report["comparable"]
+
+
+def test_clean_comparison_is_comparable(tmp_path):
+    compare_dir, _ = run(tmp_path, spec(tmp_path))
+    report = read_json(compare_dir / "compare.json")
+    assert report["environment_drift"] == [] and report["comparable"]
 
 
 def test_runs_on_different_samples_are_flagged(tmp_path):

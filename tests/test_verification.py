@@ -76,6 +76,45 @@ def test_served_model_identity_is_recorded(tmp_path):
     assert summary["served_models"] == {"qwen-2025-01@b1": 4, "qwen-2025-01@b2": 2}
 
 
+def test_cached_outputs_keep_their_served_identity_separately(tmp_path):
+    from conftest import make_samples
+
+    cache = DiskCache(tmp_path / "cache")
+
+    def evaluate(build, n):
+        model = MockModel(
+            lambda m: ModelOutput(text="1", served_model="qwen", system_fingerprint=build)
+        )
+        task = make_task(make_samples(n))
+        run_dir = asyncio.run(
+            run_eval(model, [(task, GenerateConfig())], output_dir=tmp_path, cache=cache)
+        )
+        results = {r.sample.id: r for r in read_results(run_dir / "toy/samples.jsonl")}
+        summary = json.loads((run_dir / "manifest.json").read_text())["results"]["toy"]
+        return model, results, summary
+
+    # the server changes version between runs; half of the second run is replayed
+    evaluate("b1", 3)
+    model, results, summary = evaluate("b2", 6)
+    assert model.calls == 3
+    assert (results["toy/0"].served_models, results["toy/0"].cached_served_models) == (
+        [],
+        ["qwen@b1"],
+    )
+    assert (results["toy/5"].served_models, results["toy/5"].cached_served_models) == (
+        ["qwen@b2"],
+        [],
+    )
+    assert summary["served_models"] == {"qwen@b2": 3}
+    assert summary["cached_served_models"] == {"qwen@b1": 3}
+
+    # fully replayed: nothing is claimed about the current server
+    model, results, summary = evaluate("b3", 6)
+    assert model.calls == 0
+    assert summary["served_models"] == {}
+    assert summary["cached_served_models"] == {"qwen@b1": 3, "qwen@b2": 3}
+
+
 def test_openai_compatible_model_reads_the_served_model():
     model = OpenAICompatibleModel("alias-latest", provider="openai", api_key="k")
     resp = SimpleNamespace(
@@ -185,8 +224,33 @@ def test_verify_regrades_saved_submissions_without_the_model(tmp_path, monkeypat
     assert rows[0]["verified"] == rows[0]["recorded"] == {"value": 1.0, "extracted": "hi"}
     saved = json.loads((run_dir / "verify.json").read_text())
     assert saved["tasks"]["files"]["n"] == 2 and saved["sandbox_provider"] == {"name": "fake"}
+    assert report["environment_changed"] == [] and rows[0]["environment_changes"] == []
     monkeypatch.setattr(rescore_mod, "get_task", lambda name, **params: file_task(FileScorer()))
     assert rescore_run(run_dir)["files"]["skipped"].endswith("use `harness verify`")
+
+
+def test_verify_flags_a_different_grading_environment(tmp_path, monkeypatch):
+    import itertools
+
+    from fakes import FakeSandbox
+
+    ids = itertools.count()
+
+    def describe(self, image="sha256:old"):
+        return {"type": "fake", "image_id": image, "container_id": f"c{next(ids)}"}
+
+    monkeypatch.setattr(FakeSandbox, "describe", describe)
+    run_dir = evaluate_files(tmp_path, FileScorer(), scripted(WRITE_HI, SUBMIT))
+    report, _ = verify(run_dir, monkeypatch, FileScorer())
+    assert report["statuses"] == {"agree": 2} and report["environment_changed"] == []
+
+    monkeypatch.setattr(FakeSandbox, "describe", lambda self: describe(self, "sha256:new"))
+    report, _ = verify(run_dir, monkeypatch, FileScorer())
+    # the grades still agree, but this is not a reproduction in the same image
+    assert report["statuses"] == {"agree": 2}
+    assert report["environment_changed"] == ["t/0", "t/1"]
+    row = json.loads((run_dir / "files/verify.jsonl").read_text().splitlines()[0])
+    assert row["environment_changes"] == [["image_id", "sha256:old", "sha256:new"]]
 
 
 def test_verify_detects_tampering_and_disagreement(tmp_path, monkeypatch):

@@ -280,6 +280,11 @@ def verify(
         console.print(f"{name}: {r['n']} samples, {r['statuses']}")
         if r["disagreements"]:
             console.print(f"[red]disagree:[/] {', '.join(r['disagreements'])}")
+        if r["environment_changed"]:
+            console.print(
+                "[yellow]graded in a different environment than recorded "
+                f"(see verify.jsonl):[/] {', '.join(r['environment_changed'])}"
+            )
         fp = r["scorer_fingerprint"]
         if fp["recorded"] != fp["current"]:
             console.print(f"[yellow]scorer changed since the run[/]: {fp}")
@@ -357,6 +362,9 @@ def _print_comparison(report: dict[str, Any]) -> None:
         console.print("[yellow]runs did not all evaluate the same samples[/]")
     if not report["complete"]:
         console.print("[yellow]comparison is incomplete (missing or interrupted runs)[/]")
+    for d in report["environment_drift"]:
+        console.print(f"[yellow]environment drift[/] {d['sample_id']} {d['field']}: {d['values']}")
+    console.print(f"comparable: {report['comparable']}")
 
 
 @app.command()

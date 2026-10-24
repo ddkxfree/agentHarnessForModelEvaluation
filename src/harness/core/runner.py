@@ -114,6 +114,8 @@ async def run_samples(
     async def run_one(sample: Sample) -> SampleResult:
         result = SampleResult(sample=sample)
         served: set[str] = set()
+        # identities carried by cached outputs: where those responses originally came from
+        served_cached: set[str] = set()
 
         def count_attempt(_: int) -> None:
             result.attempts += 1
@@ -123,6 +125,8 @@ async def run_samples(
         ) -> ModelOutput:
             key = cache_key(model_spec, messages, config, tools)
             if cache is not None and (hit := cache.get(key)) is not None:
+                if (identity := hit.served_identity()) is not None:
+                    served_cached.add(identity)
                 return hit.model_copy(update={"cached": True})
             try:
                 out = await retry_async(
@@ -219,12 +223,17 @@ async def run_samples(
                         await close(sb)
                 result.wall_time_s = time.perf_counter() - started
         result.served_models = sorted(served)
+        result.cached_served_models = sorted(served_cached)
         result.outcome = classify(result)
         if on_done:
             on_done(result)
         return result
 
-    return list(await asyncio.gather(*(run_one(s) for s in samples)))
+    try:
+        return list(await asyncio.gather(*(run_one(s) for s in samples)))
+    finally:
+        if sandbox_provider is not None:
+            await sandbox_provider.drain()
 
 
 def _slug(text: str) -> str:

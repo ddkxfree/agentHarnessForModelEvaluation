@@ -75,3 +75,7 @@ class SandboxProvider(ABC):
 
     def describe(self) -> dict[str, Any]:
         return {"name": self.name}
+
+    async def drain(self) -> None:
+        """Finish background cleanup, e.g. of sandboxes whose creation was cancelled."""
+        return None

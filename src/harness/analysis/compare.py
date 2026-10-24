@@ -14,6 +14,7 @@ it. ``build_report`` reads them back offline.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from harness.analysis import environment
 from harness.analysis.diff import diff_manifests
 from harness.core.cache import DiskCache
 from harness.core.io import read_json, read_results, write_json
@@ -193,6 +195,7 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
         "mean_steps": sum(len(r.steps) for r in results) / n if n else 0.0,
         "cached_outputs": sum(1 for r in results if r.output and r.output.cached),
         "served_models": sorted({m for r in results for m in r.served_models}),
+        "cached_served_models": sorted({m for r in results for m in r.cached_served_models}),
     }
 
 
@@ -206,6 +209,26 @@ def _relevant_changes(a: dict[str, Any], b: dict[str, Any]) -> list[list[Any]]:
         for key, va, vb in diff_manifests(a, b)
         if not key.startswith("run_config.compare.")
     ]
+
+
+def environment_drift(runs: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Per sample, every sandbox identity field (image id, digests, platform, limits) that is
+    not the same in all runs. Samples without a recorded sandbox are left out."""
+    seen: dict[str, dict[str, dict[str, Any]]] = {}
+    for label, label_runs in runs.items():
+        for run in label_runs:
+            for r in run["results"]:
+                if r.sandbox is None:
+                    continue
+                fields = seen.setdefault(r.sample.id, {})
+                for key, value in environment.sample_identity(r).items():
+                    fields.setdefault(key, {})[f"{label}#{run['repeat']}"] = value
+    drift = []
+    for sample_id, fields in sorted(seen.items()):
+        for key, values in sorted(fields.items()):
+            if len({json.dumps(v, sort_keys=True, default=str) for v in values.values()}) > 1:
+                drift.append({"sample_id": sample_id, "field": key, "values": values})
+    return drift
 
 
 def build_report(compare_dir: Path) -> dict[str, Any]:
@@ -270,6 +293,9 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
             "finish_reasons": dict(finish.most_common()),
             "cached_outputs": sum(s["cached_outputs"] for s in summaries),
             "served_models": sorted({m for s in summaries for m in s["served_models"]}),
+            "cached_served_models": sorted(
+                {m for s in summaries for m in s["cached_served_models"]}
+            ),
             # Repeats must differ only in randomness: any configuration change is listed here.
             "repeat_config_changes": [
                 {"repeat": r["repeat"], "changes": _relevant_changes(first, r["manifest"])}
@@ -282,6 +308,15 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
                 any(_solved(x) for x in r["results"] if x.sample.id == i) for r in label_runs
             )
             per_sample[i][condition.label] = f"{solved}/{len(label_runs)}"
+
+    drift = environment_drift(runs)
+    repeat_changes = any(c["repeat_config_changes"] for c in conditions.values())
+    complete = all(
+        len(runs[c.label]) == spec.repeats
+        and all(r["status"] == "completed" for r in runs[c.label])
+        for c in spec.conditions
+    )
+    same_samples = len(set(sample_sets.values())) <= 1
 
     baseline = spec.conditions[0].label
     base_manifest = runs[baseline][0]["manifest"] if runs[baseline] else {}
@@ -300,12 +335,12 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         "cache_policy": spec.cache_policy if spec.cache else "disabled",
         "repeats": spec.repeats,
         "baseline": baseline,
-        "complete": all(
-            len(runs[c.label]) == spec.repeats
-            and all(r["status"] == "completed" for r in runs[c.label])
-            for c in spec.conditions
-        ),
-        "same_samples_in_every_run": len(set(sample_sets.values())) <= 1,
+        # Each check is reported on its own; ``comparable`` needs all of them.
+        "complete": complete,
+        "same_samples_in_every_run": same_samples,
+        "repeat_config_changes": repeat_changes,
+        "environment_drift": drift,
+        "comparable": complete and same_samples and not repeat_changes and not drift,
         "samples": sample_ids,
         "conditions": conditions,
         "per_sample_solved": per_sample,

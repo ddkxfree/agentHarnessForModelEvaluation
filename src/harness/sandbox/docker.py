@@ -109,6 +109,7 @@ class DockerProvider(SandboxProvider):
         self._client: Any = None
         self._images: set[str] = set()
         self._build_lock = asyncio.Lock()
+        self._pending: set[asyncio.Future[Any]] = set()
 
     @property
     def client(self) -> Any:
@@ -143,19 +144,57 @@ class DockerProvider(SandboxProvider):
 
     async def create(self, spec: SandboxSpec, *, labels: dict[str, str]) -> Sandbox:
         image = await self.image_for(spec)
-        container = await _docker(
-            self.client.containers.run,
-            image,
-            command=["sleep", "infinity"],
-            detach=True,
-            init=True,
-            working_dir=spec.workdir,
-            network_mode="bridge" if spec.network else "none",
-            mem_limit=spec.memory,
-            nano_cpus=int(spec.cpus * 1e9),
-            labels={LABEL: "1", **labels},
+        # Until the sandbox is returned nobody else can remove the container, so every failure
+        # or cancellation from here on must remove it.
+        run = asyncio.ensure_future(
+            _docker(
+                self.client.containers.run,
+                image,
+                command=["sleep", "infinity"],
+                detach=True,
+                init=True,
+                working_dir=spec.workdir,
+                network_mode="bridge" if spec.network else "none",
+                mem_limit=spec.memory,
+                nano_cpus=int(spec.cpus * 1e9),
+                labels={LABEL: "1", **labels},
+            )
         )
-        return DockerSandbox(container, spec.workdir, await _docker(self._image_info, image))
+        try:
+            container = await asyncio.shield(run)
+        except asyncio.CancelledError:
+            # The SDK call keeps running in its thread; remove the container once it exists.
+            self._pending.add(run)
+            run.add_done_callback(self._remove_orphan)
+            raise
+        try:
+            info = await _docker(self._image_info, image)
+        except BaseException as exc:
+            await asyncio.shield(self._discard(container, exc))
+            raise
+        return DockerSandbox(container, spec.workdir, info)
+
+    async def _discard(self, container: Any, cause: BaseException) -> None:
+        try:
+            await asyncio.to_thread(container.remove, force=True)
+        except Exception as exc:
+            cause.add_note(f"removing container {container.id} also failed: {exc!r}")
+
+    def _remove_orphan(self, run: asyncio.Future[Any]) -> None:
+        self._pending.discard(run)
+        if run.cancelled() or run.exception() is not None:
+            return
+        container = run.result()
+        task = asyncio.ensure_future(asyncio.to_thread(container.remove, force=True))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def drain(self) -> None:
+        """Wait for removals of containers whose creation was cancelled."""
+        while self._pending:
+            await asyncio.gather(*list(self._pending), return_exceptions=True)
+            # let done callbacks run; they may schedule the removal itself
+            await asyncio.sleep(0)
 
     def _image_info(self, image: str) -> dict[str, Any]:
         attrs = self.client.images.get(image).attrs
