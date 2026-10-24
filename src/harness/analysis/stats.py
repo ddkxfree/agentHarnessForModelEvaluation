@@ -29,6 +29,8 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
     outputs = [r.output for r in results if r.output]
     fresh = [o.latency_s for o in outputs if not o.cached]
     lo, hi = bootstrap_ci(values)
+    usages = [r.usage() for r in results]
+    walls = [r.wall_time_s for r in results if r.wall_time_s is not None]
 
     agent: dict[str, Any] | None = None
     agent_results = [r for r in results if r.steps]
@@ -52,8 +54,12 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
         "rates": {o.value: (outcomes.get(o.value, 0) / n if n else 0.0) for o in Outcome},
         "extraction_methods": dict(methods.most_common()),
         "tokens": {
-            "input": sum(o.usage.input_tokens for o in outputs),
-            "output": sum(o.usage.output_tokens for o in outputs),
+            "input": sum(u.input_tokens for u in usages),
+            "output": sum(u.output_tokens for u in usages),
+        },
+        "wall_time_s": {
+            "total": sum(walls) if walls else None,
+            "mean": sum(walls) / len(walls) if walls else None,
         },
         "cached": sum(o.cached for o in outputs),
         "cleanup_errors": sum(r.cleanup_error is not None for r in results),

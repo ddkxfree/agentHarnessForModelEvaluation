@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,6 +170,7 @@ async def run_samples(
         trajectory = Trajectory(artifact_dir, sample_dirname(sample.id))
         labels = {"harness.task": task.name, "harness.sample": sample.id}
         async with sem:
+            started = time.perf_counter()
             sandbox: Sandbox | None = None
             grader: Sandbox | None = None
             # Which party is to blame if the next statement raises.
@@ -215,6 +217,7 @@ async def run_samples(
                 for sb in (sandbox, grader):
                     if sb is not None:
                         await close(sb)
+                result.wall_time_s = time.perf_counter() - started
         result.served_models = sorted(served)
         result.outcome = classify(result)
         if on_done:
