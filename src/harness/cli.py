@@ -195,6 +195,15 @@ def _print_sample(r: SampleResult, full: bool) -> None:
         for key, value in r.score.details.items():
             console.print(f"[bold]{key}[/]:")
             plain(str(value))
+    if r.judge:
+        for call, verdict in zip(r.judge.calls, r.judge.verdicts, strict=False):
+            served = call.served_model or call.model.get("name")
+            note = verdict.get("error") or verdict.get("reason") or ""
+            console.print(
+                f"[bold magenta]judge {call.judge}[/] {call.purpose} ({served}"
+                f"{', cached' if call.cached else ''}): {verdict.get('status')}"
+            )
+            plain(f"{ {k: v for k, v in verdict.items() if k in ('scores', 'preferred')} } {note}")
 
 
 @app.command()
@@ -477,6 +486,20 @@ def report(
     path = run_dir / "report.md"
     path.write_text(failure_report(run_dir, per_outcome=per_outcome, seed=seed))
     console.print(f"wrote {path}")
+
+
+@app.command("judge-agreement")
+def judge_agreement(
+    run_dir: Path,
+    labels: Annotated[Path, typer.Option(help="JSON lines of {sample_id, label}")],
+    task: Annotated[str | None, typer.Option("--task", "-t")] = None,
+    threshold: Annotated[float, typer.Option(help="Pass mark for rubric scores")] = 0.5,
+) -> None:
+    """Agreement of a run's saved judgements with independent labels; calls no model."""
+    from harness.judge.calibration import run_agreement
+
+    report = run_agreement(run_dir, labels, task=task, threshold=threshold)
+    console.print_json(data={k: v for k, v in report.items() if k != "judges"})
 
 
 @app.command("compare-report")
