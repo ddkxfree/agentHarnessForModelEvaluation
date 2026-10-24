@@ -1,3 +1,5 @@
+import decimal
+
 import pytest
 
 from harness.core.scorer import ChoiceScorer, NumberMatchScorer, normalize_number
@@ -31,6 +33,29 @@ def test_large_integers_are_compared_exactly():
     sample = Sample(id="x", input="", target="10000000000000000000000001")
     assert NumberMatchScorer()(sample, "The answer is 10000000000000000000000000").value == 0.0
     assert NumberMatchScorer()(sample, "The answer is 10000000000000000000000001").value == 1.0
+
+
+LONG_A = "0.12345678901234567890123456781"
+LONG_B = "0.12345678901234567890123456782"
+
+
+@pytest.mark.parametrize("prec", [3, 5, 28, 100])
+def test_normalization_does_not_depend_on_decimal_context(prec):
+    with decimal.localcontext() as ctx:
+        ctx.prec = prec
+        assert normalize_number(LONG_A) == LONG_A
+        assert normalize_number(LONG_A) != normalize_number(LONG_B)
+        assert normalize_number(LONG_A + "000") == LONG_A
+        assert normalize_number("123456.7890") == "123456.789"
+        assert normalize_number("-1.2300E+5") == "-123000"
+        assert normalize_number("1E-40") == "0." + "0" * 39 + "1"
+        assert normalize_number("10000000000000000000000001.0") == "10000000000000000000000001"
+
+
+def test_long_decimals_are_compared_exactly():
+    sample = Sample(id="x", input="", target=LONG_A)
+    assert NumberMatchScorer()(sample, f"The answer is {LONG_B}").value == 0.0
+    assert NumberMatchScorer()(sample, f"The answer is {LONG_A}0").value == 1.0
 
 
 @pytest.mark.parametrize("target", ["nan", "inf", "", "seven"])
@@ -104,4 +129,4 @@ def test_describe_fingerprint_changes_with_config():
     a = NumberMatchScorer().describe()["fingerprint"]
     b = NumberMatchScorer(fallback_last_number=False).describe()["fingerprint"]
     assert a != b
-    assert NumberMatchScorer().describe()["normalization"] == "decimal_exact"
+    assert NumberMatchScorer().describe()["normalization"] == "decimal_exact_v2"

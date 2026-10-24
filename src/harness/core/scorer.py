@@ -45,7 +45,9 @@ def normalize_number(raw: str) -> str | None:
     """Canonical exact form of a number, or None if ``raw`` is not a finite number.
 
     Uses Decimal so large integers are not rounded (floats would make 10**25 + 1 == 10**25),
-    and rejects NaN/Infinity so they can never compare equal to anything.
+    and rejects NaN/Infinity so they can never compare equal to anything. Only exact
+    operations are used: arithmetic such as ``Decimal.normalize()`` rounds to the current
+    context precision (28 digits by default) and would make long decimals compare equal.
     """
     s = raw.strip().replace(",", "").replace("$", "").rstrip(".")
     try:
@@ -56,7 +58,8 @@ def normalize_number(raw: str) -> str | None:
         return None
     if value == value.to_integral_value():
         return str(int(value))
-    return format(value.normalize(), "f")
+    # Not integral, so the fixed-point form has a non-zero fractional digit to stop at.
+    return format(value, "f").rstrip("0")
 
 
 class NumberMatchScorer:
@@ -101,7 +104,7 @@ class NumberMatchScorer:
             "name": self.name,
             "rules": self.RULES,
             "fallback_last_number": self.fallback_last_number,
-            "normalization": "decimal_exact",
+            "normalization": "decimal_exact_v2",
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc
