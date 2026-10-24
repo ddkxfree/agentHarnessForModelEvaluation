@@ -37,4 +37,4 @@
 
 ## 验证
 
-`uv run pytest -q`：265 passed（含 swebench extra，本机 Docker 实际运行）；`ruff check`、`ruff format --check` 通过。
+`uv run pytest -q`：265 passed（含 swebench extra，本机 Docker 实际运行）；只装基础依赖时 240 passed、8 skipped；`ruff check`、`ruff format --check` 通过。
