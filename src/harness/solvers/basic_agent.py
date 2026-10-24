@@ -54,12 +54,15 @@ class BasicAgent:
         self,
         *,
         system_prompt: str = SYSTEM_PROMPT,
-        workdir: str = "/app",
+        workdir: str | None = "/app",
         max_steps: int = 20,
         command_timeout: float = 60.0,
         max_observation_chars: int = 4000,
     ) -> None:
-        self.system_prompt = system_prompt.format(workdir=workdir)
+        # None: tasks whose images set different working directories.
+        self.system_prompt = system_prompt.format(
+            workdir=workdir or "the directory your commands start in"
+        )
         self.max_steps = max_steps
         self.command_timeout = command_timeout
         self.max_observation_chars = max_observation_chars
