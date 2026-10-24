@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Protocol
@@ -41,11 +42,23 @@ def requires_sandbox(scorer: Scorer | SandboxScorer) -> bool:
     return bool(getattr(scorer, "requires_sandbox", False))
 
 
+def check_score(score: object) -> Score:
+    """Rejects what a buggy scorer may return, e.g. ``Score.model_construct(value=nan)``."""
+    if not isinstance(score, Score):
+        raise TypeError(f"scorer returned {type(score).__name__}, not Score")
+    value = score.value
+    if not (isinstance(value, int | float) and math.isfinite(value) and 0.0 <= value <= 1.0):
+        raise ValueError(f"scorer produced an invalid value {value!r}")
+    return score
+
+
 def normalize_number(raw: str) -> str | None:
     """Canonical exact form of a number, or None if ``raw`` is not a finite number.
 
     Uses Decimal so large integers are not rounded (floats would make 10**25 + 1 == 10**25),
-    and rejects NaN/Infinity so they can never compare equal to anything.
+    and rejects NaN/Infinity so they can never compare equal to anything. Only exact
+    operations are used: arithmetic such as ``Decimal.normalize()`` rounds to the current
+    context precision (28 digits by default) and would make long decimals compare equal.
     """
     s = raw.strip().replace(",", "").replace("$", "").rstrip(".")
     try:
@@ -56,7 +69,8 @@ def normalize_number(raw: str) -> str | None:
         return None
     if value == value.to_integral_value():
         return str(int(value))
-    return format(value.normalize(), "f")
+    # Not integral, so the fixed-point form has a non-zero fractional digit to stop at.
+    return format(value, "f").rstrip("0")
 
 
 class NumberMatchScorer:
@@ -101,7 +115,7 @@ class NumberMatchScorer:
             "name": self.name,
             "rules": self.RULES,
             "fallback_last_number": self.fallback_last_number,
-            "normalization": "decimal_exact",
+            "normalization": "decimal_exact_v2",
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc

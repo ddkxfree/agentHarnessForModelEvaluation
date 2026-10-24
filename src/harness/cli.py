@@ -233,7 +233,7 @@ def rescore(run_dir: Path) -> None:
             continue
         console.print(
             f"{name}: accuracy {c['accuracy_before']:.3f} -> {c['accuracy_after']:.3f}"
-            f" ({c['samples_changed']} samples changed)"
+            f" ({c['samples_changed']} samples changed, {c['scorer_errors']} scorer errors)"
         )
 
 

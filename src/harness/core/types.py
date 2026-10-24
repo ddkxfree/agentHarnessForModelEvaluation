@@ -129,6 +129,8 @@ class SampleResult(BaseModel):
     error_kind: ErrorKind | None = None
     outcome: Outcome | None = None
     attempts: int = 0
+    # Scoring states replaced by `harness rescore`, oldest first.
+    rescore_history: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def classify(result: SampleResult) -> Outcome:
