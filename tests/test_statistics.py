@@ -57,7 +57,7 @@ def test_epochs_are_sampled_separately_and_resume_within_an_epoch(tmp_path):
     manifest = read_json(run_dir / "manifest.json")
     assert manifest["tasks"][0]["epochs"] == [1, 2, 3]
     stats = manifest["results"]["toy"]["epochs"]
-    assert stats["n_epochs"] == 3 and stats["std"] == 0.0 and stats["inconsistent_samples"] == 0
+    assert stats["n_epochs"] == 3 and stats["std"] == 0.0 and stats["outcome_varies_samples"] == 0
 
     # re-running (e.g. after an interruption) replays every epoch from the cache
     again = MockModel(answer)
@@ -93,7 +93,7 @@ def test_epoch_statistics_and_ci_resample_samples_not_epochs():
     assert one["ci95"] == three["ci95"]
     flaky = summarize(results(4, True))["epochs"]
     assert flaky["accuracy_per_epoch"] == {"1": 0.5, "2": 4 / 6, "3": 0.5, "4": 4 / 6}
-    assert flaky["inconsistent_samples"] == 1
+    assert flaky["outcome_varies_samples"] == flaky["score_varies_samples"] == 1
     assert flaky["std"] == pytest.approx(0.0962, abs=1e-3)
 
 
@@ -146,7 +146,15 @@ def test_resume_reruns_only_missing_runs_and_replays_their_cache(tmp_path):
     ]
     assert [(r["label"], r["repeat"]) for r in index["superseded"]] == [("plain", 2)]
     report = build_report(compare_dir)
-    assert report["complete"] and report["comparable"]
+    assert report["complete"] and report["scores_comparable"]
+    # the resumed run replayed its responses, so its wall time is not inference time
+    assert not report["performance_comparable"]
+    assert report["cache_states"]["plain#2"] == "cached"
+    assert report["cache_states"]["careful#2"] == "cached"
+    assert report["cache_states"]["plain#1"] == "fresh"
+    resumed = [r for r in report["conditions"]["plain"]["runs"] if r["resumed"]]
+    assert [r["repeat"] for r in resumed] == [2]
+    assert resumed[0]["fresh_input_tokens"] == 0 and resumed[0]["input_tokens"] == 40
 
     # a new comparison from the same spec gets its own namespace and samples afresh
     fresh = MockModel(respond)
@@ -219,3 +227,63 @@ def test_samples_without_epoch_field_load_as_epoch_one(tmp_path):
     [r] = read_results(path)
     assert r.epoch == 1
     assert make_samples(1)[0].id == "toy/0"
+
+
+def test_conditions_do_not_share_cached_responses(tmp_path):
+    """An ablation whose parameter never reaches the prompt sends identical requests in both
+    conditions; each condition must still get its own model calls."""
+
+    def factory(name, solver="plain", limit=None, budget=1):
+        task = toy_factory(name, solver=solver, limit=limit)
+        task.params["budget"] = budget
+        return task
+
+    s = spec(
+        tmp_path,
+        kind="ablation",
+        params={"limit": 4, "budget": 1},
+        conditions=[{"label": "base"}, {"label": "more", "params": {"budget": 2}}],
+    )
+    model = MockModel(respond)
+    compare_dir = asyncio.run(run_comparison(s, model, make_task=factory))
+    assert model.calls == 2 * 2 * 4
+    report = read_json(compare_dir / "compare.json")
+    assert report["conditions"]["more"]["cached_calls"] == 0
+    assert report["performance_comparable"]
+
+
+@pytest.mark.parametrize(
+    ("scores", "outcomes", "score_varies", "outcome_varies"),
+    [
+        ([0.5, 0.5, 0.5], ["wrong"] * 3, 0, 0),
+        ([0.5, 0.25, 0.5], ["wrong"] * 3, 1, 0),
+        ([1.0, 1.0, 1.0], ["correct"] * 3, 0, 0),
+        ([0.0, 0.0, 0.0], ["wrong"] * 3, 0, 0),
+        ([1.0, 0.0, 1.0], ["correct", "wrong", "correct"], 1, 1),
+    ],
+)
+def test_epoch_variation_handles_partial_scores(scores, outcomes, score_varies, outcome_varies):
+    results = [
+        SampleResult(
+            sample=Sample(id="s", input="", target=""),
+            epoch=e,
+            score=Score(value=v),
+            outcome=Outcome(o),
+        )
+        for e, (v, o) in enumerate(zip(scores, outcomes, strict=True), start=1)
+    ]
+    stats = summarize(results)["epochs"]
+    assert stats["score_varies_samples"] == score_varies
+    assert stats["outcome_varies_samples"] == outcome_varies
+
+
+def test_summary_separates_fresh_and_replayed_calls(tmp_path):
+    cache = DiskCache(tmp_path / "cache")
+    first, _ = evaluate(tmp_path, MockModel(answer), cache)
+    second, results = evaluate(tmp_path, MockModel(answer), cache)
+    s1 = read_json(first / "manifest.json")["results"]["toy"]
+    s2 = read_json(second / "manifest.json")["results"]["toy"]
+    assert s1["calls"] == {"fresh": 6, "cached": 0}
+    assert s2["calls"] == {"fresh": 0, "cached": 6}
+    assert s2["fresh_tokens"] == {"input": 0, "output": 0}
+    assert all(r.calls.cached == 1 for r in results)
