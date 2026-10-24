@@ -27,11 +27,12 @@
 - 阶段 5 第 1～5 步已完成：Docker 沙箱、`env_error`、基线工具调用 Agent、轨迹记录、3 个自建终端任务和 Oracle 校验。见 [02](progress/02-agent-sandbox.md)。
 - 阶段 5 第 6、7 步已完成：SWE-bench Lite（官方镜像与判分逻辑、参考补丁 Oracle）、mini-swe-agent 作为 Solver 插件。见 [03](progress/03-swebench-mini-swe-agent.md)。
 - 阶段 5 加固第一轮实现已提交：失败分类、分数校验、数字比较、提交校验与 CI 修正。见 [04](progress/04-correctness-diagnostics.md)。2026-10-24 复评暂未通过：终端 NaN 漏判未修、长小数仍舍入、重评遗留错误状态，见 [05](progress/05-review-correctness-diagnostics.md)。本机 96 passed、8 skipped，静态检查通过；Docker 与可选依赖集成测试未复核。
-- 117 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI。
+- R1～R3 已修复，待复评：见 [06](progress/06-review-fixes.md)。
+- 135 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
-1. 正确性与诊断：非法提交、失败分类、分数校验与 CI 已修；须补修终端 NaN 漏判、长小数精度与重评状态恢复后复评。
+1. 正确性与诊断：非法提交、失败分类、分数校验与 CI 已修；终端 NaN 漏判、长小数精度与重评状态恢复已补修（[06](progress/06-review-fixes.md)），待复评。
 2. 失败可追踪：中途异常保留轨迹、完成样本及时落盘、清理失败要记录、单题总时长限制。
 3. 独立复核：完整产物、环境身份（镜像 digest、服务端模型版本）、新容器评分、SWE-bench 不调模型重评。
 4. 接入真实 Terminal-Bench（固定版本，3～5 题；Oracle 全过、不操作全失败；不改 core）。
