@@ -175,7 +175,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-152 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
+168 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
 
 ## 路线图
 
