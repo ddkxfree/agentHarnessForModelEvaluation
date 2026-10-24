@@ -227,6 +227,7 @@ def swebench(
     ids: list[str] | None = None,
     solver: str = "agent",
     max_steps: int = 30,
+    time_limit: float | None = 3600.0,
     command_timeout: float = 120.0,
     eval_timeout: float = 1800.0,
 ) -> Task:
@@ -275,7 +276,9 @@ def swebench(
             "solver": solver,
             "max_steps": max_steps,
             "command_timeout": command_timeout,
+            "time_limit": time_limit,
             "eval_timeout": eval_timeout,
         },
         sandbox=sandbox_spec,
+        time_limit=time_limit,
     )

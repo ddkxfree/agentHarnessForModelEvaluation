@@ -6,6 +6,7 @@ from typing import Any
 
 from harness.core.fingerprint import fingerprint
 from harness.core.solver import Generate
+from harness.core.trajectory import current_trajectory
 from harness.core.types import Message, ModelOutput, Sample, SolveResult, Step, ToolCall, Usage
 from harness.sandbox.base import Sandbox
 
@@ -84,32 +85,39 @@ class BasicAgent:
             return None, "Error: 'answer' must be a string. Nothing was submitted."
         return str(answer), None
 
-    async def _run_tool(self, call: ToolCall, sandbox: Sandbox | None) -> tuple[str, int | None]:
+    async def _run_tool(
+        self, call: ToolCall, sandbox: Sandbox | None
+    ) -> tuple[str, int | None, str | None]:
+        """Return the observation shown to the model, the exit code, and the complete output
+        when the observation had to be truncated."""
         args, error = self._parse_args(call)
         if args is None:
-            return error or "", None
+            return error or "", None, None
         if call.name != "bash":
-            return f"Error: unknown tool {call.name!r}. Available tools: bash, submit.", None
+            return f"Error: unknown tool {call.name!r}. Available tools: bash, submit.", None, None
         command = args.get("command")
         if not isinstance(command, str) or not command.strip():
-            return "Error: 'command' must be a non-empty string.", None
+            return "Error: 'command' must be a non-empty string.", None, None
         if sandbox is None:
-            return "Error: this task has no sandbox to run commands in.", None
+            return "Error: this task has no sandbox to run commands in.", None, None
 
         res = await sandbox.exec(command, timeout=self.command_timeout)
         header = f"exit_code={res.exit_code}"
         if res.timed_out:
             header += f" (timed out after {self.command_timeout:g}s)"
-        return f"{header}\n{res.combined(self.max_observation_chars)}", res.exit_code
+        full, shown = res.combined(), res.combined(self.max_observation_chars)
+        return f"{header}\n{shown}", res.exit_code, (full if shown != full else None)
 
     async def __call__(
         self, sample: Sample, generate: Generate, sandbox: Sandbox | None = None
     ) -> SolveResult:
-        messages: list[Message] = [
+        trajectory = current_trajectory()
+        messages: list[Message] = trajectory.messages
+        steps: list[Step] = trajectory.steps
+        messages += [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": sample.input},
         ]
-        steps: list[Step] = []
         usage = Usage()
         all_cached = True
         final_text = ""
@@ -126,21 +134,22 @@ class BasicAgent:
                 usage=out.usage,
                 latency_s=out.latency_s,
             )
+            steps.append(step)
             assistant: Message = {"role": "assistant", "content": out.text}
             if out.tool_calls:
                 assistant["tool_calls"] = [c.to_message() for c in out.tool_calls]
             messages.append(assistant)
 
             if not out.tool_calls:
-                steps.append(step)
                 final_text = out.text
                 finish = "length" if out.finish_reason == "length" else "no_tool_call"
                 break
 
             submitted = False
             start = time.perf_counter()
-            for call in out.tool_calls:
+            for j, call in enumerate(out.tool_calls):
                 exit_code: int | None = None
+                raw_name: str | None = None
                 if submitted:
                     observation = "Not executed: submit was already called in this turn."
                 elif call.name == "submit":
@@ -150,12 +159,14 @@ class BasicAgent:
                     else:
                         observation, submitted, final_text = "Submitted.", True, answer
                 else:
-                    observation, exit_code = await self._run_tool(call, sandbox)
+                    observation, exit_code, raw = await self._run_tool(call, sandbox)
+                    if raw is not None:
+                        raw_name = trajectory.save_artifact(f"step-{i}-call-{j}.txt", raw).name
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": observation})
                 step.observations.append(observation)
+                step.raw_outputs.append(raw_name)
                 step.exit_codes.append(exit_code)
-            step.tool_latency_s = time.perf_counter() - start
-            steps.append(step)
+                step.tool_latency_s = time.perf_counter() - start
             if submitted:
                 finish = "submit"
                 break

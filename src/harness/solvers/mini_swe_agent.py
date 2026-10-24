@@ -13,8 +13,10 @@ Needs the optional dependency: ``uv sync --extra swebench``.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import shlex
+import threading
 import time
 from importlib.resources import files
 from types import SimpleNamespace
@@ -24,6 +26,7 @@ import yaml
 
 from harness.core.fingerprint import fingerprint
 from harness.core.solver import Generate
+from harness.core.trajectory import Trajectory, current_trajectory
 from harness.core.types import Message, ModelOutput, Sample, SolveResult, Step, Usage
 from harness.sandbox.base import Sandbox, SandboxError
 
@@ -43,17 +46,48 @@ def load_mini_config(name: str) -> dict[str, Any]:
     return yaml.safe_load(path.read_text())
 
 
+class _Cancelled(BaseException):
+    """Raised inside the worker thread to unwind the agent after the sample was cancelled.
+
+    A BaseException, so mini-swe-agent's ``except Exception`` handlers do not swallow it.
+    """
+
+
 class _Bridge:
     """State shared by the bridge model and environment for one sample."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop, trajectory: Trajectory) -> None:
         self.loop = loop
-        self.steps: list[Step] = []
+        self.trajectory = trajectory
+        self.steps = trajectory.steps
         self.usage = Usage()
         self.all_cached = True
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._pending: set[concurrent.futures.Future[Any]] = set()
 
     def run(self, coro: Any) -> Any:
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result()
+        """Run ``coro`` on the event loop and wait for it, from the worker thread."""
+        with self._lock:
+            if self._cancelled:
+                coro.close()
+                raise _Cancelled
+            future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+            self._pending.add(future)
+        try:
+            return future.result()
+        except concurrent.futures.CancelledError:
+            raise _Cancelled from None
+        finally:
+            with self._lock:
+                self._pending.discard(future)
+
+    def cancel(self) -> None:
+        """Stop the worker: in-flight calls are cancelled and no new ones are started."""
+        with self._lock:
+            self._cancelled = True
+            for future in self._pending:
+                future.cancel()
 
 
 class HarnessModel:
@@ -116,12 +150,28 @@ class HarnessModel:
             format_toolcall_observation_messages,
         )
 
-        return format_toolcall_observation_messages(
+        formatted = format_toolcall_observation_messages(
             actions=message.get("extra", {}).get("actions", []),
             outputs=outputs,
             observation_template=self.config.observation_template,
             template_vars=template_vars,
         )
+        if self.bridge.steps and formatted:
+            self._record_observations(self.bridge.steps[-1], outputs, formatted)
+        return formatted
+
+    def _record_observations(self, step: Step, outputs: list[dict], formatted: list[dict]) -> None:
+        """Replace the raw outputs recorded by the environment with what the model is shown;
+        an output the template truncated is kept as an artifact."""
+        first = len(step.observations) - len(outputs)
+        if first < 0 or len(formatted) != len(outputs):
+            return
+        for k, (out, msg) in enumerate(zip(outputs, formatted, strict=True)):
+            shown, raw = str(msg.get("content", "")), out.get("output", "")
+            step.observations[first + k] = shown
+            if raw not in shown:
+                name = f"step-{step.index}-call-{k}.txt"
+                step.raw_outputs[first + k] = self.bridge.trajectory.save_artifact(name, raw).name
 
     def get_template_vars(self, **kwargs: Any) -> dict[str, Any]:
         return {**vars(self.config), **kwargs}
@@ -171,6 +221,7 @@ class SandboxEnvironment:
         if self.bridge.steps:
             step = self.bridge.steps[-1]
             step.observations.append(output["output"])
+            step.raw_outputs.append(None)
             step.exit_codes.append(res.exit_code)
             step.tool_latency_s += elapsed
         self._check_finished(output)
@@ -222,8 +273,11 @@ class MiniSweAgent:
         max_steps: int = 50,
         command_timeout: float | None = None,
         cwd: str | None = None,
+        cancel_grace: float = 30.0,
     ) -> None:
         self.config_name = config
+        # How long a cancelled sample waits for the worker thread to unwind.
+        self.cancel_grace = cancel_grace
         self.mini_config = load_mini_config(config)
         self.max_steps = max_steps
         env_cfg = self.mini_config.get("environment", {})
@@ -245,18 +299,34 @@ class MiniSweAgent:
 
         if sandbox is None:
             raise SandboxError("mini-swe-agent needs a sandbox")
-        bridge = _Bridge(asyncio.get_running_loop())
+        loop = asyncio.get_running_loop()
+        trajectory = current_trajectory()
+        bridge = _Bridge(loop, trajectory)
         model = HarnessModel(generate, bridge, self.mini_config["model"])
         env = SandboxEnvironment(
             sandbox, bridge, cwd=self.cwd, env=self.env, timeout=self.command_timeout
         )
         agent = DefaultAgent(model, env, **self._agent_config())
-        info = await asyncio.to_thread(agent.run, sample.input)
+        worker = loop.run_in_executor(None, agent.run, sample.input)
+        try:
+            # shield: on cancellation we must keep the future to wait for the thread to stop.
+            info = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            bridge.cancel()
+            done, _ = await asyncio.wait({worker}, timeout=self.cancel_grace)
+            if not done:
+                raise RuntimeError(
+                    f"mini-swe-agent worker did not stop within {self.cancel_grace:g}s"
+                ) from None
+            worker.exception()  # the expected _Cancelled; retrieve it so asyncio does not warn
+            raise
+        finally:
+            trajectory.messages[:] = [
+                {k: v for k, v in m.items() if k != "extra"} for m in agent.messages
+            ]
 
         exit_status = info.get("exit_status", "")
-        messages: list[Message] = [
-            {k: v for k, v in m.items() if k != "extra"} for m in agent.messages
-        ]
+        messages: list[Message] = trajectory.messages
         output = ModelOutput(
             text=info.get("submission", "") or "",
             finish_reason=FINISH_REASONS.get(exit_status, exit_status or "unknown"),

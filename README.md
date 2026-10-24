@@ -113,7 +113,8 @@ tasks/terminal_data/<task-id>/
 runs/<run_id>/
 ├── manifest.json          运行配置、环境、每个任务的数据集版本和指纹、汇总结果
 ├── gsm8k/
-│   ├── samples.jsonl      每道题一行：样本、完整 messages、原始输出、Agent 轨迹、token、耗时、打分、outcome
+│   ├── samples.jsonl      每道题一行：样本、完整 messages、原始输出、Agent 轨迹、token、耗时、打分、outcome、沙箱身份；每题完成即写入
+│   ├── artifacts/         每题一个目录：被截断的工具调用的完整输出等（samples.jsonl 中记有哈希）
 │   └── summary.json
 └── ...
 ```
@@ -137,6 +138,7 @@ runs/<run_id>/
 | `extract_failed` | 没能从输出中抽取出答案，通常是格式问题而不是能力问题 |
 | `truncated` | 输出因 `max_tokens` 被截断 |
 | `step_limit` | Agent 用完了步数上限仍未完成 |
+| `time_limit` | Agent 用完了单题总时长（任务参数 `time_limit`）仍未完成；超时后仍会评分 |
 | `api_error` | 模型调用失败（重试后仍失败），计入分母，避免虚高 |
 | `solver_error` | Solver / Agent 代码本身出错，不是模型的问题 |
 | `scorer_error` | 评分器出错、标准答案无效，或打出了无效分数（NaN、不在 0～1 之间），不是模型的问题 |
@@ -172,7 +174,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-135 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
+152 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
 
 ## 路线图
 
