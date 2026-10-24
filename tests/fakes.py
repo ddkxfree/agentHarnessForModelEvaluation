@@ -48,8 +48,10 @@ class FakeSandbox(Sandbox):
 class FakeProvider(SandboxProvider):
     name = "fake"
 
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self, fail: bool = False, sandbox_cls: type[FakeSandbox] | None = None) -> None:
         self.fail = fail
+        self.sandbox_cls = sandbox_cls or FakeSandbox
+        self.test_exit_code = 0
         self.created: list[FakeSandbox] = []
 
     async def create(self, spec: SandboxSpec, *, labels: dict[str, str]) -> Sandbox:
@@ -57,7 +59,8 @@ class FakeProvider(SandboxProvider):
 
         if self.fail:
             raise SandboxError("image build failed")
-        sb = FakeSandbox()
+        sb = self.sandbox_cls()
+        sb.test_exit_code = self.test_exit_code
         self.created.append(sb)
         return sb
 

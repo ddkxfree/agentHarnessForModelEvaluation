@@ -1,0 +1,315 @@
+"""Controlled comparisons: one task, one model, several conditions, repeated runs.
+
+A comparison is either
+
+* ``solver_comparison``: conditions differ only in the ``solver`` parameter. Solvers bring
+  their own prompts, tools and output handling, so this compares whole agents, not a single
+  mechanism;
+* ``ablation``: the first condition is the baseline and every other condition changes exactly
+  one parameter of it.
+
+Every run is an ordinary run directory, so ``harness show``, ``diff`` and ``rescore`` work on
+it. ``build_report`` reads them back offline.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, Field, model_validator
+
+from harness.analysis.diff import diff_manifests
+from harness.core.cache import DiskCache
+from harness.core.io import read_json, read_results, write_json
+from harness.core.model import Model
+from harness.core.runner import run_eval, use_cache
+from harness.core.task import Task, get_task
+from harness.core.types import GenerateConfig, Outcome, SampleResult
+from harness.sandbox.base import SandboxProvider
+
+Kind = Literal["solver_comparison", "ablation"]
+
+NOTES = {
+    "solver_comparison": (
+        "Conditions differ only in the solver. Each solver has its own prompts, tools and "
+        "output handling, so differences belong to the whole agent, not to one mechanism."
+    ),
+    "ablation": "Each condition changes exactly one parameter of the baseline (first) condition.",
+}
+
+
+class Condition(BaseModel):
+    label: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompareSpec(BaseModel):
+    kind: Kind
+    model: str
+    base_url: str | None = None
+    task: str
+    # Shared by every condition; a condition's params override them.
+    params: dict[str, Any] = Field(default_factory=dict)
+    conditions: list[Condition]
+    repeats: int = Field(default=3, ge=1)
+    generate: GenerateConfig = Field(default_factory=GenerateConfig)
+    concurrency: int = 2
+    retries: int = 3
+    cache: bool = True
+    cache_policy: Literal["auto", "always", "never"] = "never"
+    cache_dir: Path = Path(".cache/requests")
+    output_dir: Path = Path("runs")
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> CompareSpec:
+        return cls.model_validate(yaml.safe_load(Path(path).read_text()))
+
+    @model_validator(mode="after")
+    def _check(self) -> CompareSpec:
+        labels = [c.label for c in self.conditions]
+        if len(labels) < 2:
+            raise ValueError("a comparison needs at least two conditions")
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"condition labels must be unique: {labels}")
+        if self.kind == "solver_comparison":
+            for c in self.conditions:
+                if set(c.params) != {"solver"}:
+                    raise ValueError(
+                        f"condition {c.label!r}: a solver comparison may only set 'solver', "
+                        f"got {sorted(c.params)}"
+                    )
+            solvers = [c.params["solver"] for c in self.conditions]
+            if len(set(solvers)) != len(solvers):
+                raise ValueError(f"every condition needs a different solver: {solvers}")
+        else:
+            base = self.conditions[0]
+            if base.params:
+                raise ValueError("the baseline (first) condition must not override params")
+            for c in self.conditions[1:]:
+                changed = [k for k, v in c.params.items() if self.params.get(k, _MISSING) != v]
+                if len(changed) != 1:
+                    raise ValueError(
+                        f"condition {c.label!r} must change exactly one parameter, "
+                        f"changes {sorted(changed)}"
+                    )
+                if "solver" in changed:
+                    raise ValueError(
+                        "changing the solver is not a single-variable ablation; "
+                        "use kind: solver_comparison"
+                    )
+        if self.repeats > 1 and self.cache and use_cache(self.cache_policy, self.generate):
+            raise ValueError(
+                "repeats would replay cached model outputs; set cache_policy: never "
+                "(or auto with temperature > 0)"
+            )
+        return self
+
+    def params_for(self, condition: Condition) -> dict[str, Any]:
+        return {**self.params, **condition.params}
+
+
+_MISSING = object()
+
+TaskFactory = Callable[..., Task]
+
+
+async def run_comparison(
+    spec: CompareSpec,
+    model: Model,
+    *,
+    sandbox_provider: SandboxProvider | None = None,
+    make_task: TaskFactory = get_task,
+    progress: Any | None = None,
+) -> Path:
+    """Run every condition ``spec.repeats`` times, interleaving conditions within a repeat so
+    that drift (server load, cache warmth of images) affects them alike."""
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    compare_dir = Path(spec.output_dir) / f"compare-{stamp}-{spec.task}"
+    i = 1
+    while compare_dir.exists():
+        i += 1
+        compare_dir = compare_dir.with_name(f"compare-{stamp}-{spec.task}-{i}")
+    compare_dir.mkdir(parents=True)
+    index: dict[str, Any] = {"spec": spec.model_dump(mode="json"), "runs": []}
+    write_json(compare_dir / "index.json", index)
+
+    cache = DiskCache(spec.cache_dir) if spec.cache else None
+    for repeat in range(1, spec.repeats + 1):
+        for condition in spec.conditions:
+            task = make_task(spec.task, **spec.params_for(condition))
+            run_dir = await run_eval(
+                model,
+                [(task, spec.generate)],
+                output_dir=compare_dir / condition.label,
+                cache=cache,
+                concurrency=spec.concurrency,
+                retries=spec.retries,
+                run_config={
+                    **spec.model_dump(mode="json", exclude={"conditions"}),
+                    "params": spec.params_for(condition),
+                    "compare": {"label": condition.label, "repeat": repeat},
+                },
+                progress=progress,
+                sandbox_provider=sandbox_provider,
+                cache_policy=spec.cache_policy,
+            )
+            index["runs"].append(
+                {
+                    "label": condition.label,
+                    "repeat": repeat,
+                    "run_dir": str(run_dir.relative_to(compare_dir)),
+                }
+            )
+            write_json(compare_dir / "index.json", index)
+
+    write_json(compare_dir / "compare.json", build_report(compare_dir))
+    return compare_dir
+
+
+def _solved(r: SampleResult) -> bool:
+    return r.outcome == Outcome.CORRECT
+
+
+def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
+    n = len(results)
+    usages = [r.usage() for r in results]
+    walls = [r.wall_time_s for r in results if r.wall_time_s is not None]
+    return {
+        "n": n,
+        "accuracy": sum(r.score.value if r.score else 0.0 for r in results) / n if n else 0.0,
+        "solved": sum(_solved(r) for r in results),
+        "input_tokens": sum(u.input_tokens for u in usages),
+        "output_tokens": sum(u.output_tokens for u in usages),
+        "wall_time_s": sum(walls) if walls else None,
+        "outcomes": dict(Counter(r.outcome.value for r in results if r.outcome)),
+        "finish_reasons": dict(
+            Counter((r.output.finish_reason or "none") if r.output else "none" for r in results)
+        ),
+        "mean_steps": sum(len(r.steps) for r in results) / n if n else 0.0,
+        "cached_outputs": sum(1 for r in results if r.output and r.output.cached),
+        "served_models": sorted({m for r in results for m in r.served_models}),
+    }
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _relevant_changes(a: dict[str, Any], b: dict[str, Any]) -> list[list[Any]]:
+    return [
+        [key, va, vb]
+        for key, va, vb in diff_manifests(a, b)
+        if not key.startswith("run_config.compare.")
+    ]
+
+
+def build_report(compare_dir: Path) -> dict[str, Any]:
+    """Aggregate a comparison directory; reads only saved results, never calls the model."""
+    compare_dir = Path(compare_dir)
+    index = read_json(compare_dir / "index.json")
+    spec = CompareSpec.model_validate(index["spec"])
+    task_name = spec.task
+
+    runs: dict[str, list[dict[str, Any]]] = {c.label: [] for c in spec.conditions}
+    for entry in index["runs"]:
+        run_dir = compare_dir / entry["run_dir"]
+        manifest = read_json(run_dir / "manifest.json")
+        samples_path = run_dir / task_name / "samples.jsonl"
+        results = read_results(samples_path) if samples_path.exists() else []
+        runs[entry["label"]].append(
+            {
+                "repeat": entry["repeat"],
+                "run_dir": entry["run_dir"],
+                "status": manifest.get("status"),
+                "manifest": manifest,
+                "results": results,
+            }
+        )
+
+    sample_sets = {
+        f"{label}#{run['repeat']}": tuple(sorted(r.sample.id for r in run["results"]))
+        for label, label_runs in runs.items()
+        for run in label_runs
+    }
+    sample_ids = sorted({i for ids in sample_sets.values() for i in ids})
+
+    conditions: dict[str, Any] = {}
+    per_sample: dict[str, dict[str, str]] = {i: {} for i in sample_ids}
+    for condition in spec.conditions:
+        label_runs = sorted(runs[condition.label], key=lambda r: r["repeat"])
+        summaries = [_run_summary(r["results"]) for r in label_runs]
+        totals: Counter[str] = Counter()
+        finish: Counter[str] = Counter()
+        for s in summaries:
+            totals.update(s["outcomes"])
+            finish.update(s["finish_reasons"])
+        accuracies = [s["accuracy"] for s in summaries]
+        walls = [s["wall_time_s"] for s in summaries if s["wall_time_s"] is not None]
+        first = label_runs[0]["manifest"] if label_runs else {}
+        conditions[condition.label] = {
+            "params": spec.params_for(condition),
+            "runs": [
+                {"repeat": r["repeat"], "run_dir": r["run_dir"], "status": r["status"], **s}
+                for r, s in zip(label_runs, summaries, strict=True)
+            ],
+            "accuracy": {
+                "mean": _mean(accuracies),
+                "min": min(accuracies) if accuracies else None,
+                "max": max(accuracies) if accuracies else None,
+            },
+            "mean_input_tokens": _mean([s["input_tokens"] for s in summaries]),
+            "mean_output_tokens": _mean([s["output_tokens"] for s in summaries]),
+            "mean_wall_time_s": _mean(walls),
+            "mean_steps": _mean([s["mean_steps"] for s in summaries]),
+            "outcomes": {o.value: totals.get(o.value, 0) for o in Outcome},
+            "finish_reasons": dict(finish.most_common()),
+            "cached_outputs": sum(s["cached_outputs"] for s in summaries),
+            "served_models": sorted({m for s in summaries for m in s["served_models"]}),
+            # Repeats must differ only in randomness: any configuration change is listed here.
+            "repeat_config_changes": [
+                {"repeat": r["repeat"], "changes": _relevant_changes(first, r["manifest"])}
+                for r in label_runs[1:]
+                if _relevant_changes(first, r["manifest"])
+            ],
+        }
+        for i in sample_ids:
+            solved = sum(
+                any(_solved(x) for x in r["results"] if x.sample.id == i) for r in label_runs
+            )
+            per_sample[i][condition.label] = f"{solved}/{len(label_runs)}"
+
+    baseline = spec.conditions[0].label
+    base_manifest = runs[baseline][0]["manifest"] if runs[baseline] else {}
+    condition_changes = {
+        c.label: _relevant_changes(base_manifest, runs[c.label][0]["manifest"])
+        for c in spec.conditions[1:]
+        if runs[c.label] and base_manifest
+    }
+
+    return {
+        "kind": spec.kind,
+        "note": NOTES[spec.kind],
+        "task": task_name,
+        "model": spec.model,
+        "generate": spec.generate.model_dump(),
+        "cache_policy": spec.cache_policy if spec.cache else "disabled",
+        "repeats": spec.repeats,
+        "baseline": baseline,
+        "complete": all(
+            len(runs[c.label]) == spec.repeats
+            and all(r["status"] == "completed" for r in runs[c.label])
+            for c in spec.conditions
+        ),
+        "same_samples_in_every_run": len(set(sample_sets.values())) <= 1,
+        "samples": sample_ids,
+        "conditions": conditions,
+        "per_sample_solved": per_sample,
+        # Manifest fields that differ from the baseline's first run: the intended change plus
+        # anything else that differs, which would confound the comparison.
+        "config_changes_vs_baseline": condition_changes,
+    }

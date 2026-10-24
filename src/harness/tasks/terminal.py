@@ -83,6 +83,7 @@ def terminal(
     ids: list[str] | None = None,
     solver: str = "agent",
     max_steps: int = 20,
+    time_limit: float | None = 900.0,
     command_timeout: float = 60.0,
     root: str | None = None,
 ) -> Task:
@@ -126,7 +127,9 @@ def terminal(
             "solver": solver,
             "max_steps": max_steps,
             "command_timeout": command_timeout,
+            "time_limit": time_limit,
             "root": root,
         },
         sandbox=sandbox_spec,
+        time_limit=time_limit,
     )

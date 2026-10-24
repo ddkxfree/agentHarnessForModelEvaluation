@@ -38,8 +38,36 @@ class SandboxScorer(Protocol):
     def describe(self) -> dict[str, Any]: ...
 
 
-def requires_sandbox(scorer: Scorer | SandboxScorer) -> bool:
+class SubmissionScorer(Protocol):
+    """A sandbox scorer split in two, like the official SWE-bench harness.
+
+    ``collect`` extracts the submission (e.g. a patch) from the agent's sandbox; the runner
+    saves it as the ``submission`` artifact, closes that sandbox and calls ``grade`` in a fresh
+    sandbox built from the same spec. The grade therefore cannot depend on anything else the
+    agent changed, and saved submissions can be re-graded later without the model
+    (``harness verify``).
+    """
+
+    name: str
+    requires_sandbox: bool
+    fresh_sandbox: bool
+
+    async def collect(self, sample: Sample, text: str, sandbox: Sandbox) -> str: ...
+
+    async def grade(self, sample: Sample, submission: str, sandbox: Sandbox) -> Score: ...
+
+    def describe(self) -> dict[str, Any]: ...
+
+
+SUBMISSION_ARTIFACT = "submission"
+
+
+def requires_sandbox(scorer: Scorer | SandboxScorer | SubmissionScorer) -> bool:
     return bool(getattr(scorer, "requires_sandbox", False))
+
+
+def grades_in_fresh_sandbox(scorer: Scorer | SandboxScorer | SubmissionScorer) -> bool:
+    return bool(getattr(scorer, "fresh_sandbox", False))
 
 
 def check_score(score: object) -> Score:

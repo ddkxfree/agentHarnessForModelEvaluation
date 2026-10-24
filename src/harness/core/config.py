@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -23,6 +23,8 @@ class RunConfig(BaseModel):
     concurrency: int = 8
     retries: int = 3
     cache: bool = True
+    # auto: reuse cached outputs only at temperature 0; always; never. See runner.use_cache.
+    cache_policy: Literal["auto", "always", "never"] = "auto"
     cache_dir: Path = Path(".cache/requests")
     output_dir: Path = Path("runs")
 

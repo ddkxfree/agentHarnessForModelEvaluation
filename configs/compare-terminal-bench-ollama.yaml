@@ -1,0 +1,24 @@
+# Baseline agent vs mini-swe-agent on the 5 pinned Terminal-Bench 2.0 tasks (needs Docker):
+#   ollama pull qwen2.5:3b-instruct
+#   harness run -m none/none -t terminal-bench -p terminal-bench.solver=oracle   # 5/5
+#   harness compare -c configs/compare-terminal-bench-ollama.yaml
+kind: solver_comparison
+model: ollama/qwen2.5:3b-instruct
+task: terminal-bench
+params:
+  max_steps: 15
+  command_timeout: 60
+  time_limit: 600
+conditions:
+  - label: basic
+    params: {solver: agent}
+  - label: mini
+    params: {solver: mini}
+repeats: 3
+generate:
+  temperature: 0.0
+  max_tokens: 512
+  seed: 0
+  timeout: 300
+concurrency: 1
+cache_policy: never

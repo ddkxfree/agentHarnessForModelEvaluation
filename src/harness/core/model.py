@@ -103,6 +103,8 @@ class OpenAICompatibleModel(Model):
             finish_reason=choice.finish_reason,
             usage=usage,
             latency_s=latency,
+            served_model=resp.model or None,
+            system_fingerprint=getattr(resp, "system_fingerprint", None) or None,
         )
 
     def is_retryable(self, exc: BaseException) -> bool:
