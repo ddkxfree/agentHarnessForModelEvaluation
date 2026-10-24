@@ -62,6 +62,10 @@ class Sandbox(ABC):
     @abstractmethod
     async def close(self) -> None: ...
 
+    def describe(self) -> dict[str, Any]:
+        """Identity of this sandbox, recorded with the sample (e.g. container and image ids)."""
+        return {"type": type(self).__name__}
+
 
 class SandboxProvider(ABC):
     name: str

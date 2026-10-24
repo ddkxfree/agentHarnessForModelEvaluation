@@ -6,9 +6,9 @@ from typing import Any
 from harness.analysis.stats import summarize
 from harness.core.io import read_json, read_results, write_json, write_results
 from harness.core.manifest import now
-from harness.core.scorer import check_score, requires_sandbox
+from harness.core.scorer import check_score, grades_in_fresh_sandbox, requires_sandbox
 from harness.core.task import get_task
-from harness.core.types import ErrorKind, SampleResult, classify
+from harness.core.types import ErrorKind, SampleResult, Score, classify
 
 
 def _scoring_state(r: SampleResult) -> dict[str, Any]:
@@ -20,27 +20,48 @@ def _scoring_state(r: SampleResult) -> dict[str, Any]:
     }
 
 
-def rescore_sample(r: SampleResult, scorer: Any, *, at: str, from_fingerprint: str | None) -> bool:
-    """Re-applies ``scorer`` to one saved result; returns whether its scoring state changed.
+def reached_scoring(r: SampleResult) -> bool:
+    """Only these may be rescored: model, solver and environment failures keep their error,
+    so a rescore can never turn them into successes."""
+    return r.output is not None and r.error_kind in (None, ErrorKind.SCORER)
 
-    Only samples that reached scoring are touched: model, solver and environment failures keep
-    their error, so a rescore can never turn them into successes. A previous scorer failure is
-    cleared on success, and a new failure is recorded as ``scorer_error`` on that sample only.
+
+def apply_rescore(
+    r: SampleResult, new: Score | Exception, *, at: str, from_fingerprint: str | None
+) -> bool:
+    """Replace the scoring state of ``r`` with a new score or scorer failure.
+
+    A previous scorer failure is cleared on success; the replaced state goes to the sample's
+    ``rescore_history``. Returns whether anything changed.
     """
-    if r.output is None or r.error_kind not in (None, ErrorKind.SCORER):
-        return False
     before = _scoring_state(r)
-    try:
-        r.score = check_score(scorer(r.sample, r.output.text))
-        r.error = r.error_kind = None
-    except Exception as exc:
+    if isinstance(new, Exception):
         r.score = None
-        r.error, r.error_kind = f"{type(exc).__name__}: {exc}", ErrorKind.SCORER
+        r.error, r.error_kind = f"{type(new).__name__}: {new}", ErrorKind.SCORER
+    else:
+        r.score = new
+        r.error = r.error_kind = None
     r.outcome = classify(r)
     if _scoring_state(r) == before:
         return False
     r.rescore_history.append({"at": at, "scorer_fingerprint": from_fingerprint, **before})
     return True
+
+
+def rescore_sample(r: SampleResult, scorer: Any, *, at: str, from_fingerprint: str | None) -> bool:
+    """Re-applies ``scorer`` to one saved result; returns whether its scoring state changed.
+
+    A failure is recorded as ``scorer_error`` on that sample only.
+    """
+    if not reached_scoring(r):
+        return False
+    assert r.output is not None
+    new: Score | Exception
+    try:
+        new = check_score(scorer(r.sample, r.output.text))
+    except Exception as exc:
+        new = exc
+    return apply_rescore(r, new, at=at, from_fingerprint=from_fingerprint)
 
 
 def rescore_run(run_dir: Path) -> dict[str, Any]:
@@ -60,7 +81,10 @@ def rescore_run(run_dir: Path) -> dict[str, Any]:
             continue
         scorer = get_task(name, **entry["params"]).scorer
         if requires_sandbox(scorer):
-            changes[name] = {"skipped": "scorer needs the sandbox, which no longer exists"}
+            reason = "scorer needs the sandbox, which no longer exists"
+            if grades_in_fresh_sandbox(scorer):
+                reason = "grades saved submissions in a fresh sandbox; use `harness verify`"
+            changes[name] = {"skipped": reason}
             continue
         results = read_results(samples_path)
 

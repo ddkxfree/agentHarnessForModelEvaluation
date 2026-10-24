@@ -30,17 +30,21 @@
 - 阶段 5 第 6、7 步已完成：SWE-bench Lite（官方镜像与判分逻辑、参考补丁 Oracle）、mini-swe-agent 作为 Solver 插件。见 [03](progress/03-swebench-mini-swe-agent.md)。
 - 阶段 5 加固第一轮实现已提交：失败分类、分数校验、数字比较、提交校验与 CI 修正。见 [04](progress/04-correctness-diagnostics.md)。2026-10-24 复评暂未通过：终端 NaN 漏判未修、长小数仍舍入、重评遗留错误状态，见 [05](progress/05-review-correctness-diagnostics.md)。本机 96 passed、8 skipped，静态检查通过；Docker 与可选依赖集成测试未复核。
 - R1～R3 已修复，待复评：见 [06](progress/06-review-fixes.md)。
-- 135 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
+- 加固第二轮（失败可追踪）已实现，待复评：见 [07](progress/07-traceability.md)。
+- 加固第三轮（独立复核）已实现，待复评：见 [08](progress/08-independent-verification.md)。
+- 加固第四轮（真实 Terminal-Bench 2.0，5 题）已实现，待复评：见 [09](progress/09-terminal-bench.md)。
+- 加固第五轮（Solver 对照，`harness compare`）已实现并在自建终端任务上实测，待复评：见 [10](progress/10-solver-comparison.md)。
+- 210 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
 1. 正确性与诊断：非法提交、失败分类、分数校验与 CI 已修；终端 NaN 漏判、长小数精度与重评状态恢复已补修（[06](progress/06-review-fixes.md)），待复评。
-2. 失败可追踪：中途异常保留轨迹、完成样本及时落盘、清理失败要记录、单题总时长限制。
-3. 独立复核：完整产物、环境身份（镜像 digest、服务端模型版本）、新容器评分、SWE-bench 不调模型重评。
-4. 接入真实 Terminal-Bench（固定版本，3～5 题；Oracle 全过、不操作全失败；不改 core）。
-5. 有意义的 Solver 对照：固定模型、样本、预算和缓存策略，记录成功率、token、耗时和失败归类。
+2. 失败可追踪：中途异常保留轨迹、完成样本及时落盘、清理失败要记录、单题总时长限制。已实现（[07](progress/07-traceability.md)），待复评。
+3. 独立复核：完整产物、环境身份（镜像 digest、服务端模型版本）、新容器评分、SWE-bench 不调模型重评。已实现（[08](progress/08-independent-verification.md)），待复评。
+4. 接入真实 Terminal-Bench（固定版本，3～5 题；Oracle 全过、不操作全失败；不改 core）。已实现（[09](progress/09-terminal-bench.md)），待复评。
+5. 有意义的 Solver 对照：固定模型、样本、预算和缓存策略，记录成功率、token、耗时和失败归类。已实现（[10](progress/10-solver-comparison.md)），待复评；Terminal-Bench／SWE-bench 上的对照尚未运行。
 
-缓存复用策略在第 3 或第 5 轮中明确（temperature > 0 时默认不复用），完整的多轮次 epochs 留到阶段 7。
+缓存复用策略已在第 3 轮明确（`cache_policy: auto`，temperature > 0 时默认不复用），完整的多轮次 epochs 留到阶段 7。
 
 十阶段初步完成的最小验收、给 Opus 的开发范围和最终试运行清单见 [05 复评记录](progress/05-review-correctness-diagnostics.md)。建议顺序为当前补修 → 阶段 5 加固／阶段 9 最小适配 → 阶段 7 → 阶段 10 → 阶段 6 → 阶段 8；仍按 Opus 开发、Codex 逐轮评审推进。
 
@@ -57,7 +61,7 @@
 5. ~~自建 3 个 Terminal-Bench 风格的小任务，以及 Oracle Solver。~~ 已完成：`tasks/terminal_data/`
 6. ~~接入 SWE-bench Lite / Verified 的少量样本：复用官方 Docker 镜像和单测验证逻辑，包装为 Task 和 `SandboxScorer`。~~ 已完成：`tasks/swebench.py`
 7. ~~把 mini-swe-agent 包装为 Solver 插件，和基线 Solver 在同一批题上对比。~~ 已完成：`solvers/mini_swe_agent.py`（本地 3B 模型两者都是 0/2，需要用更强的模型对比）
-8. 接入真实的 Terminal-Bench 任务（或通过 Harbor 的任务格式），验证不改 core 就能容纳第二种 Agent 评测集。
+8. ~~接入真实的 Terminal-Bench 任务（或通过 Harbor 的任务格式），验证不改 core 就能容纳第二种 Agent 评测集。~~ 已完成：`tasks/terminal_bench.py`，Terminal-Bench 2.0 的 5 道题
 
 验收：同一个模型分别配基线 Solver 和 mini-swe-agent，在自建任务和 SWE-bench 小样本上都能跑出结果；`harness show` 能看到完整轨迹；沙箱不泄漏容器。
 

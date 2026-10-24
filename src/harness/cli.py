@@ -71,6 +71,10 @@ def run(
     concurrency: Annotated[int | None, typer.Option()] = None,
     retries: Annotated[int | None, typer.Option()] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache")] = False,
+    cache_policy: Annotated[
+        str | None,
+        typer.Option(help="auto (reuse only at temperature 0), always or never"),
+    ] = None,
     output_dir: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Evaluate a model on one or more tasks."""
@@ -93,6 +97,7 @@ def run(
         ("concurrency", concurrency),
         ("retries", retries),
         ("output_dir", output_dir),
+        ("cache_policy", cache_policy),
     ]:
         if value is not None:
             updates[key] = value
@@ -144,6 +149,7 @@ def run(
                 run_config=cfg.model_dump(mode="json"),
                 progress=progress,
                 sandbox_provider=sandbox_provider,
+                cache_policy=cfg.cache_policy,
             )
         )
 
@@ -161,14 +167,20 @@ def _print_sample(r: SampleResult, full: bool) -> None:
     console.print(f"target={r.sample.target!r}  extracted={extracted!r}  method={method}")
     if r.error:
         console.print(f"[red]{r.error}[/]")
+    if r.cleanup_error:
+        console.print(f"[red]sandbox cleanup failed: {r.cleanup_error}[/]  {r.sandbox}")
+    artifacts = {a.name: a for a in r.artifacts}
     for step in r.steps:
         tokens = step.usage.input_tokens + step.usage.output_tokens
         console.print(f"[bold cyan]step {step.index}[/]  ({tokens} tokens)")
         if step.text.strip():
             plain(step.text)
-        for call, obs in zip(step.tool_calls, step.observations, strict=False):
+        raw = step.raw_outputs or [None] * len(step.observations)
+        for call, obs, raw_name in zip(step.tool_calls, step.observations, raw, strict=False):
             plain(f"$ {call.name} {call.arguments}")
             plain(obs)
+            if raw_name and (a := artifacts.get(raw_name)):
+                console.print(f"[dim]full output ({a.size} bytes): artifacts/{a.path}[/]")
     if not r.steps:
         plain(r.output.text if r.output else "")
     if r.score:
@@ -238,6 +250,42 @@ def rescore(run_dir: Path) -> None:
 
 
 @app.command()
+def verify(
+    run_dir: Path,
+    task: Annotated[list[str] | None, typer.Option("--task", "-t")] = None,
+    sample: Annotated[list[str] | None, typer.Option(help="Only these sample ids")] = None,
+    concurrency: Annotated[int, typer.Option()] = 2,
+    update: Annotated[
+        bool, typer.Option("--update", help="Replace the recorded grades with the new ones")
+    ] = False,
+) -> None:
+    """Re-grade saved submissions (e.g. SWE-bench patches) in fresh containers, no model calls."""
+    from harness.analysis.verify import verify_run
+    from harness.sandbox.docker import DockerProvider
+
+    report = asyncio.run(
+        verify_run(
+            run_dir,
+            DockerProvider(),
+            tasks=task,
+            sample_ids=sample,
+            concurrency=concurrency,
+            update=update,
+        )
+    )
+    for name, r in report.items():
+        if "skipped" in r:
+            console.print(f"{name}: skipped ({r['skipped']})")
+            continue
+        console.print(f"{name}: {r['n']} samples, {r['statuses']}")
+        if r["disagreements"]:
+            console.print(f"[red]disagree:[/] {', '.join(r['disagreements'])}")
+        fp = r["scorer_fingerprint"]
+        if fp["recorded"] != fp["current"]:
+            console.print(f"[yellow]scorer changed since the run[/]: {fp}")
+
+
+@app.command()
 def diff(run_a: Path, run_b: Path, show_ids: Annotated[int, typer.Option()] = 10) -> None:
     """Compare two runs: configuration/environment changes and per-sample flips."""
     from harness.analysis.diff import diff_runs
@@ -266,6 +314,90 @@ def diff(run_a: Path, run_b: Path, show_ids: Annotated[int, typer.Option()] = 10
         console.print(f"improvements ({len(t['improvements'])}): {t['improvements'][:show_ids]}")
         if t["outcome_transitions"]:
             console.print(f"outcome transitions: {t['outcome_transitions']}")
+
+
+def _print_comparison(report: dict[str, Any]) -> None:
+    console.rule(f"{report['kind']}: {report['task']} with {report['model']}")
+    console.print(report["note"])
+    table = Table(title=f"{report['repeats']} repeat(s) per condition")
+    cols = ["condition", "accuracy (min-max)", "in tok", "out tok", "wall s", "steps"]
+    for col in [*cols, "outcomes", "finish reasons"]:
+        table.add_column(col, overflow="fold")
+    for label, c in report["conditions"].items():
+        acc = c["accuracy"]
+
+        def num(v: float | None, fmt: str = ".0f") -> str:
+            return "-" if v is None else format(v, fmt)
+
+        table.add_row(
+            label,
+            f"{num(acc['mean'], '.3f')} ({num(acc['min'], '.2f')}-{num(acc['max'], '.2f')})",
+            num(c["mean_input_tokens"]),
+            num(c["mean_output_tokens"]),
+            num(c["mean_wall_time_s"], ".1f"),
+            num(c["mean_steps"], ".1f"),
+            ", ".join(f"{k}={v}" for k, v in c["outcomes"].items() if v),
+            ", ".join(f"{k}={v}" for k, v in c["finish_reasons"].items()),
+        )
+    console.print(table)
+    per_sample = Table(title="solved / runs per sample")
+    per_sample.add_column("sample", overflow="fold")
+    for label in report["conditions"]:
+        per_sample.add_column(label)
+    for sample_id, row in report["per_sample_solved"].items():
+        per_sample.add_row(sample_id, *row.values())
+    console.print(per_sample)
+    for label, changes in report["config_changes_vs_baseline"].items():
+        keys = ", ".join(k for k, _, _ in changes)
+        console.print(f"{label} vs {report['baseline']} differs in: {keys}")
+    for label, c in report["conditions"].items():
+        for r in c["repeat_config_changes"]:
+            console.print(f"[yellow]{label} repeat {r['repeat']} config differs:[/] {r['changes']}")
+    if not report["same_samples_in_every_run"]:
+        console.print("[yellow]runs did not all evaluate the same samples[/]")
+    if not report["complete"]:
+        console.print("[yellow]comparison is incomplete (missing or interrupted runs)[/]")
+
+
+@app.command()
+def compare(
+    config: Annotated[Path, typer.Option("--config", "-c", help="YAML comparison spec")],
+) -> None:
+    """Run each condition of a comparison several times and report them side by side."""
+    from harness.analysis.compare import CompareSpec, run_comparison
+    from harness.core.model import get_model
+    from harness.core.task import get_task
+
+    spec = CompareSpec.from_yaml(config)
+    llm = get_model(spec.model, base_url=spec.base_url)
+    sandbox_provider = None
+    if get_task(spec.task, **spec.params_for(spec.conditions[0])).sandbox is not None:
+        from harness.sandbox.docker import DockerProvider
+
+        sandbox_provider = DockerProvider()
+    with Progress(
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        compare_dir = asyncio.run(
+            run_comparison(spec, llm, sandbox_provider=sandbox_provider, progress=progress)
+        )
+    _print_comparison(read_json(compare_dir / "compare.json"))
+    console.print(f"results in {compare_dir}")
+
+
+@app.command("compare-report")
+def compare_report(compare_dir: Path) -> None:
+    """Rebuild a comparison's report from its saved runs, without calling the model."""
+    from harness.analysis.compare import build_report
+    from harness.core.io import write_json
+
+    report = build_report(compare_dir)
+    write_json(compare_dir / "compare.json", report)
+    _print_comparison(report)
 
 
 if __name__ == "__main__":

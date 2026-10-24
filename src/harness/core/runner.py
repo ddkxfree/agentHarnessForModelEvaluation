@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import hashlib
+import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from harness.analysis.stats import summarize
 from harness.core.cache import DiskCache, cache_key
@@ -14,8 +16,14 @@ from harness.core.io import write_json, write_results
 from harness.core.manifest import environment_info, now, task_entry
 from harness.core.model import Model, ModelCallError
 from harness.core.retry import retry_async
-from harness.core.scorer import check_score, requires_sandbox
+from harness.core.scorer import (
+    SUBMISSION_ARTIFACT,
+    check_score,
+    grades_in_fresh_sandbox,
+    requires_sandbox,
+)
 from harness.core.task import Task
+from harness.core.trajectory import Trajectory, recording
 from harness.core.types import (
     ErrorKind,
     GenerateConfig,
@@ -23,9 +31,52 @@ from harness.core.types import (
     ModelOutput,
     Sample,
     SampleResult,
+    SolveResult,
+    Usage,
     classify,
 )
 from harness.sandbox.base import Sandbox, SandboxError, SandboxProvider
+
+log = logging.getLogger(__name__)
+
+# How long closing a sandbox may take before it is recorded as a cleanup failure.
+CLOSE_TIMEOUT = 120.0
+
+
+def sample_dirname(sample_id: str) -> str:
+    """Readable, collision-free directory name for a sample's artifacts."""
+    digest = hashlib.sha256(sample_id.encode()).hexdigest()[:8]
+    return f"{_slug(sample_id)}-{digest}"
+
+
+async def close_sandbox(sandbox: Sandbox, sample_id: str) -> str | None:
+    """Close ``sandbox``; return a description of the failure instead of raising."""
+    try:
+        await asyncio.wait_for(sandbox.close(), CLOSE_TIMEOUT)
+    except Exception as exc:
+        error = _describe(exc)
+        log.warning("failed to close sandbox %s of %s: %s", sandbox.describe(), sample_id, error)
+        return error
+    return None
+
+
+CachePolicy = Literal["auto", "always", "never"]
+
+
+def use_cache(policy: CachePolicy, config: GenerateConfig) -> bool:
+    """Whether model outputs may be read from and written to the cache.
+
+    A cached answer is one fixed draw, so reusing it under sampling (temperature > 0) would
+    silently turn repeated runs into copies of the first. ``auto`` therefore caches only
+    greedy decoding; ``always`` also caches sampled outputs, e.g. to resume a crashed run.
+    """
+    if policy == "never":
+        return False
+    if policy == "always":
+        return True
+    if policy == "auto":
+        return config.temperature == 0
+    raise ValueError(f"unknown cache policy {policy!r}; use auto, always or never")
 
 
 def is_timeout(exc: BaseException) -> bool:
@@ -48,7 +99,10 @@ async def run_samples(
     retry_base_delay: float = 1.0,
     on_done: Callable[[SampleResult], None] | None = None,
     sandbox_provider: SandboxProvider | None = None,
+    artifact_dir: Path | None = None,
 ) -> list[SampleResult]:
+    """Solve and score every sample. ``artifact_dir`` receives files such as untruncated tool
+    outputs, one subdirectory per sample; without it only their hashes are recorded."""
     sem = asyncio.Semaphore(concurrency)
     model_spec = model.spec()
     if task.sandbox is not None and sandbox_provider is None:
@@ -59,6 +113,7 @@ async def run_samples(
 
     async def run_one(sample: Sample) -> SampleResult:
         result = SampleResult(sample=sample)
+        served: set[str] = set()
 
         def count_attempt(_: int) -> None:
             result.attempts += 1
@@ -81,6 +136,8 @@ async def run_samples(
                 )
             except Exception as exc:
                 raise ModelCallError(_describe(exc)) from exc
+            if (identity := out.served_identity()) is not None:
+                served.add(identity)
             if cache is not None:
                 cache.put(key, out)
             return out
@@ -93,34 +150,75 @@ async def run_samples(
             else:
                 result.error, result.error_kind = _describe(exc), stage
 
+        async def solve(sandbox: Sandbox | None) -> SolveResult:
+            timer = asyncio.timeout(task.time_limit)
+            try:
+                async with timer:
+                    return await task.solver(sample, generate, sandbox)
+            except TimeoutError:
+                if not timer.expired():
+                    raise
+            # Cancelled by the time limit: score whatever state the solver left behind.
+            usage = sum((s.usage for s in trajectory.steps), Usage())
+            output = ModelOutput(text="", finish_reason="time_limit", usage=usage)
+            return SolveResult(messages=trajectory.messages, output=output, steps=trajectory.steps)
+
+        async def close(sandbox: Sandbox) -> None:
+            if (error := await close_sandbox(sandbox, sample.id)) is not None:
+                result.cleanup_error = "; ".join(filter(None, [result.cleanup_error, error]))
+
+        trajectory = Trajectory(artifact_dir, sample_dirname(sample.id))
+        labels = {"harness.task": task.name, "harness.sample": sample.id}
         async with sem:
+            started = time.perf_counter()
             sandbox: Sandbox | None = None
+            grader: Sandbox | None = None
             # Which party is to blame if the next statement raises.
             stage = ErrorKind.ENV
             try:
-                if task.sandbox is not None:
-                    assert sandbox_provider is not None
-                    labels = {"harness.task": task.name, "harness.sample": sample.id}
-                    sandbox = await sandbox_provider.create(task.sandbox(sample), labels=labels)
-                stage = ErrorKind.SOLVER
-                solved = await task.solver(sample, generate, sandbox)
-                result.messages, result.output, result.steps = (
-                    solved.messages,
-                    solved.output,
-                    solved.steps,
-                )
-                stage = ErrorKind.SCORER
-                if requires_sandbox(task.scorer):
-                    score = await task.scorer(sample, solved.output.text, sandbox)
-                else:
-                    score = task.scorer(sample, solved.output.text)
-                result.score = check_score(score)
+                with recording(trajectory):
+                    if task.sandbox is not None:
+                        assert sandbox_provider is not None
+                        sandbox = await sandbox_provider.create(task.sandbox(sample), labels=labels)
+                        result.sandbox = sandbox.describe()
+                    stage = ErrorKind.SOLVER
+                    solved = await solve(sandbox)
+                    result.messages, result.output, result.steps = (
+                        solved.messages,
+                        solved.output,
+                        solved.steps,
+                    )
+                    stage = ErrorKind.SCORER
+                    text = solved.output.text
+                    if grades_in_fresh_sandbox(task.scorer):
+                        assert sandbox is not None and sandbox_provider is not None
+                        submission = await task.scorer.collect(sample, text, sandbox)
+                        trajectory.save_artifact(SUBMISSION_ARTIFACT, submission)
+                        await close(sandbox)
+                        sandbox = None
+                        stage = ErrorKind.ENV
+                        grader = await sandbox_provider.create(
+                            task.sandbox(sample), labels={**labels, "harness.phase": "grade"}
+                        )
+                        result.grading_sandbox = grader.describe()
+                        stage = ErrorKind.SCORER
+                        score = await task.scorer.grade(sample, submission, grader)
+                    elif requires_sandbox(task.scorer):
+                        score = await task.scorer(sample, text, sandbox)
+                    else:
+                        score = task.scorer(sample, text)
+                    result.score = check_score(score)
             except Exception as exc:
                 fail(exc, stage)
+                if result.output is None:
+                    result.messages, result.steps = trajectory.messages, trajectory.steps
             finally:
-                if sandbox is not None:
-                    with contextlib.suppress(Exception):
-                        await sandbox.close()
+                result.artifacts = trajectory.artifacts
+                for sb in (sandbox, grader):
+                    if sb is not None:
+                        await close(sb)
+                result.wall_time_s = time.perf_counter() - started
+        result.served_models = sorted(served)
         result.outcome = classify(result)
         if on_done:
             on_done(result)
@@ -155,10 +253,12 @@ async def run_eval(
     run_config: dict[str, Any] | None = None,
     progress: Any | None = None,
     sandbox_provider: SandboxProvider | None = None,
+    cache_policy: CachePolicy = "auto",
 ) -> Path:
     """Run every task, writing per-sample logs, summaries and a manifest under one run dir.
 
     ``progress`` is an optional ``rich.progress.Progress`` used to display progress.
+    ``cache_policy`` decides per task whether ``cache`` is used; see ``use_cache``.
     """
     run_dir = new_run_dir(Path(output_dir), model)
     manifest: dict[str, Any] = {
@@ -180,31 +280,41 @@ async def run_eval(
             samples = task.load()
             entry = task_entry(task, samples)
             entry["generate_config"] = config.model_dump()
+            reuse = cache is not None and use_cache(cache_policy, config)
+            entry["cache"] = {"enabled": cache is not None, "policy": cache_policy, "used": reuse}
             if task.sandbox is not None and sandbox_provider is not None:
                 entry["sandbox_provider"] = sandbox_provider.describe()
             manifest["tasks"].append(entry)
             write_json(manifest_path, manifest)
 
-            on_done = None
-            if progress is not None:
-                bar = progress.add_task(task.name, total=len(samples))
+            bar = progress.add_task(task.name, total=len(samples)) if progress else None
+            task_dir = run_dir / task.name
+            samples_path = task_dir / "samples.jsonl"
+            samples_path.parent.mkdir(parents=True, exist_ok=True)
+            # Append each sample as it finishes so an interrupted run keeps completed work;
+            # the file is rewritten in sample order once the task is done.
+            with open(samples_path, "w") as live:
 
-                def on_done(_: SampleResult, bar: Any = bar) -> None:
-                    progress.advance(bar)
+                def on_done(r: SampleResult, live: Any = live, bar: Any = bar) -> None:
+                    live.write(r.model_dump_json() + "\n")
+                    live.flush()
+                    if progress is not None:
+                        progress.advance(bar)
 
-            results = await run_samples(
-                task,
-                samples,
-                model,
-                config,
-                cache=cache,
-                concurrency=concurrency,
-                retries=retries,
-                on_done=on_done,
-                sandbox_provider=sandbox_provider,
-            )
+                results = await run_samples(
+                    task,
+                    samples,
+                    model,
+                    config,
+                    cache=cache if reuse else None,
+                    concurrency=concurrency,
+                    retries=retries,
+                    on_done=on_done,
+                    sandbox_provider=sandbox_provider,
+                    artifact_dir=task_dir / "artifacts",
+                )
             summary = summarize(results)
-            write_results(run_dir / task.name / "samples.jsonl", results)
+            write_results(samples_path, results)
             write_json(run_dir / task.name / "summary.json", summary)
             manifest["results"][task.name] = summary
             write_json(manifest_path, manifest)
