@@ -34,7 +34,8 @@
 - 加固第三轮（独立复核）已实现，待复评：见 [08](progress/08-independent-verification.md)。
 - 加固第四轮（真实 Terminal-Bench 2.0，5 题）已实现，待复评：见 [09](progress/09-terminal-bench.md)。
 - 加固第五轮（Solver 对照，`harness compare`）已实现并在自建终端任务上实测，待复评：见 [10](progress/10-solver-comparison.md)。
-- 210 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
+- 11 的 N1～N4 已补修，待复评：见 [12](progress/12-stage5-followup-fixes.md)。PR #7～#10 原先只合并进叠加分支，由 PR #11 合入 master。
+- 226 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
