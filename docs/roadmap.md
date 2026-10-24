@@ -23,7 +23,7 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
-2026-10-24 累积复评：当前工作区仍在 PR #6；另从已缓存的 PR #10 分支 `c950fa5` 导出并审查了 #6～#10 的累积源码，没有同步或修改当前实现。第五阶段已有可用原型，下一阶段可在补修创建失败清理、缓存模型身份和实际环境漂移检查后推进。最新快照本机 179 passed、14 skipped，静态检查通过；真实 TB／SWE Solver 对照仍待运行。详见 [11 复评与本地运行计划](progress/11-stage5-review-and-next.md)。以下状态条目保留当前工作区对应的记录，不代表已同步远端新实现。
+历史复评记录：第 11 轮评审时工作区停在 PR #6，从缓存的 PR #10 分支 `c950fa5` 导出审查了累积源码，本机 179 passed、14 skipped；详见 [11](progress/11-stage5-review-and-next.md)。当前已更新到 `8ebc843`，包含阶段七。阶段七复评本机 198 passed、16 skipped，静态检查通过；消融条件间缓存隔离、恢复后的耗时口径和部分分数一致性仍需补修，见 [14](progress/14-stage7-review.md)。真实 TB／SWE Solver 对照仍待运行。
 
 - 阶段 1～4 已完成：GSM8K、MMLU；并发、重试、缓存续跑；manifest、rescore、diff；诊断统计。见 [01](progress/01-platform-core.md)。
 - 阶段 5 第 1～5 步已完成：Docker 沙箱、`env_error`、基线工具调用 Agent、轨迹记录、3 个自建终端任务和 Oracle 校验。见 [02](progress/02-agent-sandbox.md)。
@@ -35,7 +35,7 @@
 - 加固第四轮（真实 Terminal-Bench 2.0，5 题）已实现，待复评：见 [09](progress/09-terminal-bench.md)。
 - 加固第五轮（Solver 对照，`harness compare`）已实现并在自建终端任务上实测，待复评：见 [10](progress/10-solver-comparison.md)。
 - 11 的 N1～N4 已补修，待复评：见 [12](progress/12-stage5-followup-fixes.md)。PR #7～#10 原先只合并进叠加分支，由 PR #11 合入 master。
-- 阶段 7 最小版（重复实验、恢复、配对统计、失败报告）已实现，MockModel 测试通过，真实多 epoch 运行待验证：见 [13](progress/13-statistics-diagnostics.md)。
+- 阶段 7 最小版（重复实验、恢复、配对统计、失败报告）已实现，MockModel 测试通过，真实多 epoch 运行待验证：见 [13](progress/13-statistics-diagnostics.md)。复评发现 S1～S3，须补修后验收：见 [14](progress/14-stage7-review.md)。
 - 231 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
