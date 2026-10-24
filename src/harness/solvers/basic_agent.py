@@ -64,16 +64,30 @@ class BasicAgent:
         self.max_observation_chars = max_observation_chars
         self.tools = [BASH_TOOL, SUBMIT_TOOL]
 
-    async def _run_tool(self, call: ToolCall, sandbox: Sandbox | None) -> tuple[str, int | None]:
+    @staticmethod
+    def _parse_args(call: ToolCall) -> tuple[dict[str, Any] | None, str | None]:
         try:
             args = json.loads(call.arguments or "{}")
             if not isinstance(args, dict):
                 raise ValueError("arguments must be a JSON object")
         except ValueError as exc:
-            return f"Error: could not parse tool arguments ({exc}).", None
+            return None, f"Error: could not parse tool arguments ({exc})."
+        return args, None
 
-        if call.name == "submit":
-            return "Submitted.", None
+    def _parse_submit(self, call: ToolCall) -> tuple[str | None, str | None]:
+        """Return ``(answer, None)`` for a valid submission or ``(None, error)``."""
+        args, error = self._parse_args(call)
+        if args is None:
+            return None, f"{error} Nothing was submitted; call submit again."
+        answer = args.get("answer", "")
+        if isinstance(answer, bool) or not isinstance(answer, str | int | float):
+            return None, "Error: 'answer' must be a string. Nothing was submitted."
+        return str(answer), None
+
+    async def _run_tool(self, call: ToolCall, sandbox: Sandbox | None) -> tuple[str, int | None]:
+        args, error = self._parse_args(call)
+        if args is None:
+            return error or "", None
         if call.name != "bash":
             return f"Error: unknown tool {call.name!r}. Available tools: bash, submit.", None
         command = args.get("command")
@@ -126,16 +140,20 @@ class BasicAgent:
             submitted = False
             start = time.perf_counter()
             for call in out.tool_calls:
-                observation, exit_code = await self._run_tool(call, sandbox)
+                exit_code: int | None = None
+                if submitted:
+                    observation = "Not executed: submit was already called in this turn."
+                elif call.name == "submit":
+                    answer, error = self._parse_submit(call)
+                    if answer is None:
+                        observation = error or ""
+                    else:
+                        observation, submitted, final_text = "Submitted.", True, answer
+                else:
+                    observation, exit_code = await self._run_tool(call, sandbox)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": observation})
                 step.observations.append(observation)
                 step.exit_codes.append(exit_code)
-                if call.name == "submit":
-                    submitted = True
-                    try:
-                        final_text = str(json.loads(call.arguments or "{}").get("answer", ""))
-                    except (ValueError, AttributeError):
-                        final_text = ""
             step.tool_latency_s = time.perf_counter() - start
             steps.append(step)
             if submitted:
@@ -159,6 +177,8 @@ class BasicAgent:
             "command_timeout": self.command_timeout,
             "max_observation_chars": self.max_observation_chars,
             "tools": self.tools,
+            # 2: invalid submit calls are rejected, and calls after submit are not executed
+            "loop_version": 2,
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc

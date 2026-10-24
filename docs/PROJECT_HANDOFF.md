@@ -4,6 +4,13 @@
 - 本文所有测试结果在 2026-10-24 于全新虚拟机上重新运行得到（Python 3.12.3、uv 0.13.5、Docker 29.1.3）
 - 写作原则：只陈述有源码或测试证据的事实；没有验证过的内容标注 **【未验证】**；证据给出文件路径和行号
 
+> **更新（第五阶段加固第一轮，见 `docs/progress/04-correctness-diagnostics.md`）**
+>
+> - 已修复：5.1 第 1、2 条；NaN 分数和 NaN/Infinity 被当作数字的问题；大整数精度问题；基线 Agent 的非法提交问题。
+> - outcome 新增 `solver_error` 和 `scorer_error`，`ErrorKind` 新增 `solver` 和 `scorer`（4.1 节的定义已随之过时，以源码为准）。
+> - 测试数量从 83 增加到 117。
+> - 第 6 节的任务已按评审意见重排为五轮。
+
 ## 0. 一句话现状
 
 路线图八个阶段中，阶段 1～4 已完成；阶段 5 的 8 步完成了前 7 步，第 8 步（真实 Terminal-Bench）未开始；阶段 6～8 未开始。共 83 个测试，在有 Docker 且已拉取 SWE-bench 镜像的环境中全部通过；ruff 检查和格式检查通过。
@@ -220,11 +227,17 @@ def select(samples, limit, seed) -> list[Sample]
 
 ```python
 class Generate(Protocol):
-    async def __call__(self, messages: list[Message], tools: list[dict] | None = None) -> ModelOutput: ...
+    async def __call__(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> ModelOutput: ...
+
 
 class Solver(Protocol):
     name: str
-    async def __call__(self, sample: Sample, generate: Generate, sandbox: Sandbox | None = None) -> SolveResult: ...
+
+    async def __call__(
+        self, sample: Sample, generate: Generate, sandbox: Sandbox | None = None
+    ) -> SolveResult: ...
     def describe(self) -> dict[str, Any]: ...
 ```
 
@@ -233,14 +246,17 @@ class Solver(Protocol):
 ### 4.4 Scorer（`core/scorer.py`）
 
 ```python
-class Scorer(Protocol):          # 只依赖原始输出，可离线重打分
+class Scorer(Protocol):  # 只依赖原始输出，可离线重打分
     name: str
+
     def __call__(self, sample: Sample, text: str) -> Score: ...
     def describe(self) -> dict[str, Any]: ...
 
-class SandboxScorer(Protocol):   # 在沙箱里判分，不能离线重打分
+
+class SandboxScorer(Protocol):  # 在沙箱里判分，不能离线重打分
     name: str
     requires_sandbox: bool
+
     async def __call__(self, sample: Sample, text: str, sandbox: Sandbox) -> Score: ...
     def describe(self) -> dict[str, Any]: ...
 ```
@@ -316,8 +332,8 @@ Docker 实现要点（`sandbox/docker.py`）：
 
 ### 5.1 已确认的 Bug
 
-1. **CI 从未在 `master` 上运行**。`.github/workflows/ci.yml` 的触发条件是 `push: branches: [main]`，而默认分支是 `master`。`gh run list --branch master` 返回空列表；CI 只在两个 PR 分支上跑过，结果均为 success。
-2. **Scorer 内部的 bug 被记为模型错误**。`runner.py:96-100` 捕获 solver 和 scorer 的全部异常，除 `SandboxError` 外都标为 `ErrorKind.MODEL`。复现：让 scorer 抛出 `KeyError`，结果是 `outcome=api_error, error_kind=model`。评分器故障和 Agent 逻辑故障因此都会被算成模型失败。
+1. 【已修复，见 04】**CI 从未在 `master` 上运行**。`.github/workflows/ci.yml` 的触发条件是 `push: branches: [main]`，而默认分支是 `master`。`gh run list --branch master` 返回空列表；CI 只在两个 PR 分支上跑过，结果均为 success。
+2. 【已修复，见 04】**Scorer 内部的 bug 被记为模型错误**。`runner.py:96-100` 捕获 solver 和 scorer 的全部异常，除 `SandboxError` 外都标为 `ErrorKind.MODEL`。复现：让 scorer 抛出 `KeyError`，结果是 `outcome=api_error, error_kind=model`。评分器故障和 Agent 逻辑故障因此都会被算成模型失败。
 3. **中文答案会被兜底规则提取错**。`NumberMatchScorer` 的规则只认英文的 `answer is`。复现：
    - `"最终答案是 42。验证过程一共用了 3 步。"` → `('3', 'last_number')`
    - `"<final>42</final> took 3 steps"` → `('3', 'last_number')`
@@ -368,6 +384,18 @@ Docker 实现要点（`sandbox/docker.py`）：
 | T7 | 中文和标签式答案提取：作为**新增规则**加入，旧规则保持不变，scorer 指纹随之变化 | `core/scorer.py` | 5.1 第 3、4 条中的样例有对应测试；对旧运行执行 `rescore` 会生成 `rescore_history`，能显示提取规则改动带来的分数变化 |
 
 建议先做 T1、T2，因为改动最小，并且直接影响对结果的信任；然后做 T3、T4、T5，最后做 T6。
+
+### 6.1 按评审意见调整后的顺序（当前执行计划）
+
+| 轮次 | 内容 | 对应上表 | 状态 |
+|---|---|---|---|
+| 1 | 正确性与诊断：NaN 与数字比较、非法提交、失败分类、CI | T1、T2 | 已完成，见 `progress/04` |
+| 2 | 失败可追踪：中途异常保留轨迹、完成样本及时落盘、清理失败要记录、单题总时长限制 | 5.3 第 13 条 | 未开始 |
+| 3 | 独立复核：完整产物、环境身份、新容器评分、SWE-bench 不调模型重评；明确缓存复用策略 | T3（只做策略）、T4、T5 | 未开始 |
+| 4 | 真实 Terminal-Bench | T6 | 未开始 |
+| 5 | Solver 对照实验 | — | 未开始 |
+
+T7（中文答案提取）和完整的 epochs 功能留到阶段 7。
 
 ## 7. 关键源码文件与提交
 

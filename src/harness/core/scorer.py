@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 import re
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Protocol
 
 from harness.core.fingerprint import fingerprint
@@ -42,14 +42,21 @@ def requires_sandbox(scorer: Scorer | SandboxScorer) -> bool:
 
 
 def normalize_number(raw: str) -> str | None:
+    """Canonical exact form of a number, or None if ``raw`` is not a finite number.
+
+    Uses Decimal so large integers are not rounded (floats would make 10**25 + 1 == 10**25),
+    and rejects NaN/Infinity so they can never compare equal to anything.
+    """
     s = raw.strip().replace(",", "").replace("$", "").rstrip(".")
     try:
-        value = float(s)
-    except ValueError:
+        value = Decimal(s)
+    except InvalidOperation:
         return None
-    if math.isfinite(value) and value == int(value):
+    if not value.is_finite():
+        return None
+    if value == value.to_integral_value():
         return str(int(value))
-    return repr(value)
+    return format(value.normalize(), "f")
 
 
 class NumberMatchScorer:
@@ -83,16 +90,18 @@ class NumberMatchScorer:
         return None, None
 
     def __call__(self, sample: Sample, text: str) -> Score:
-        extracted, method = self.extract(text)
         target = normalize_number(sample.target)
-        correct = extracted is not None and target is not None and extracted == target
-        return Score(value=float(correct), extracted=extracted, method=method)
+        if target is None:
+            raise ValueError(f"target {sample.target!r} of sample {sample.id} is not a number")
+        extracted, method = self.extract(text)
+        return Score(value=float(extracted == target), extracted=extracted, method=method)
 
     def describe(self) -> dict[str, Any]:
         desc = {
             "name": self.name,
             "rules": self.RULES,
             "fallback_last_number": self.fallback_last_number,
+            "normalization": "decimal_exact",
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc
@@ -126,9 +135,13 @@ class ChoiceScorer:
         return None, None
 
     def __call__(self, sample: Sample, text: str) -> Score:
+        target = sample.target.strip().upper()
+        if len(target) != 1 or target not in self.letters:
+            raise ValueError(
+                f"target {sample.target!r} of sample {sample.id} is not one of {self.letters}"
+            )
         extracted, method = self.extract(text)
-        correct = extracted is not None and extracted == sample.target.strip().upper()
-        return Score(value=float(correct), extracted=extracted, method=method)
+        return Score(value=float(extracted == target), extracted=extracted, method=method)
 
     def describe(self) -> dict[str, Any]:
         desc = {

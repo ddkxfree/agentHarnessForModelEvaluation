@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -12,7 +13,7 @@ from harness.analysis.stats import summarize
 from harness.core.cache import DiskCache, cache_key
 from harness.core.io import write_json, write_results
 from harness.core.manifest import environment_info, now, task_entry
-from harness.core.model import Model
+from harness.core.model import Model, ModelCallError
 from harness.core.retry import retry_async
 from harness.core.scorer import requires_sandbox
 from harness.core.task import Task
@@ -23,6 +24,7 @@ from harness.core.types import (
     ModelOutput,
     Sample,
     SampleResult,
+    Score,
     classify,
 )
 from harness.sandbox.base import Sandbox, SandboxError, SandboxProvider
@@ -30,6 +32,10 @@ from harness.sandbox.base import Sandbox, SandboxError, SandboxProvider
 
 def is_timeout(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError)
+
+
+def _describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
 
 
 async def run_samples(
@@ -65,39 +71,58 @@ async def run_samples(
             key = cache_key(model_spec, messages, config, tools)
             if cache is not None and (hit := cache.get(key)) is not None:
                 return hit.model_copy(update={"cached": True})
-            out = await retry_async(
-                lambda: asyncio.wait_for(model.generate(messages, config, tools), config.timeout),
-                retries=retries,
-                is_retryable=retryable,
-                base_delay=retry_base_delay,
-                on_attempt=count_attempt,
-            )
+            try:
+                out = await retry_async(
+                    lambda: asyncio.wait_for(
+                        model.generate(messages, config, tools), config.timeout
+                    ),
+                    retries=retries,
+                    is_retryable=retryable,
+                    base_delay=retry_base_delay,
+                    on_attempt=count_attempt,
+                )
+            except Exception as exc:
+                raise ModelCallError(_describe(exc)) from exc
             if cache is not None:
                 cache.put(key, out)
             return out
 
+        def fail(exc: Exception, stage: ErrorKind) -> None:
+            if isinstance(exc, ModelCallError):
+                result.error, result.error_kind = str(exc), ErrorKind.MODEL
+            elif isinstance(exc, SandboxError):
+                result.error, result.error_kind = _describe(exc), ErrorKind.ENV
+            else:
+                result.error, result.error_kind = _describe(exc), stage
+
         async with sem:
             sandbox: Sandbox | None = None
+            # Which party is to blame if the next statement raises.
+            stage = ErrorKind.ENV
             try:
                 if task.sandbox is not None:
                     assert sandbox_provider is not None
                     labels = {"harness.task": task.name, "harness.sample": sample.id}
                     sandbox = await sandbox_provider.create(task.sandbox(sample), labels=labels)
+                stage = ErrorKind.SOLVER
                 solved = await task.solver(sample, generate, sandbox)
                 result.messages, result.output, result.steps = (
                     solved.messages,
                     solved.output,
                     solved.steps,
                 )
+                stage = ErrorKind.SCORER
                 if requires_sandbox(task.scorer):
-                    result.score = await task.scorer(sample, solved.output.text, sandbox)
+                    score = await task.scorer(sample, solved.output.text, sandbox)
                 else:
-                    result.score = task.scorer(sample, solved.output.text)
+                    score = task.scorer(sample, solved.output.text)
+                if not isinstance(score, Score):
+                    raise TypeError(f"scorer returned {type(score).__name__}, not Score")
+                if not (math.isfinite(score.value) and 0.0 <= score.value <= 1.0):
+                    raise ValueError(f"scorer produced an invalid value {score.value!r}")
+                result.score = score
             except Exception as exc:
-                result.error = f"{type(exc).__name__}: {exc}"
-                result.error_kind = (
-                    ErrorKind.ENV if isinstance(exc, SandboxError) else ErrorKind.MODEL
-                )
+                fail(exc, stage)
             finally:
                 if sandbox is not None:
                     with contextlib.suppress(Exception):

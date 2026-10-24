@@ -83,7 +83,8 @@ class SolveResult(BaseModel):
 
 
 class Score(BaseModel):
-    value: float
+    # NaN or out-of-range values would silently poison accuracy; reject them at construction.
+    value: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     extracted: str | None = None
     method: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
@@ -96,12 +97,26 @@ class Outcome(StrEnum):
     TRUNCATED = "truncated"
     STEP_LIMIT = "step_limit"
     API_ERROR = "api_error"
+    SOLVER_ERROR = "solver_error"
+    SCORER_ERROR = "scorer_error"
     ENV_ERROR = "env_error"
 
 
 class ErrorKind(StrEnum):
-    MODEL = "model"
-    ENV = "env"
+    """Who failed, so infrastructure or harness bugs are not counted as model failures."""
+
+    MODEL = "model"  # the model call failed after retries
+    SOLVER = "solver"  # the solver or agent code raised
+    SCORER = "scorer"  # the scorer raised or produced an invalid score
+    ENV = "env"  # the sandbox or other environment failed
+
+
+ERROR_OUTCOMES = {
+    ErrorKind.MODEL: Outcome.API_ERROR,
+    ErrorKind.SOLVER: Outcome.SOLVER_ERROR,
+    ErrorKind.SCORER: Outcome.SCORER_ERROR,
+    ErrorKind.ENV: Outcome.ENV_ERROR,
+}
 
 
 class SampleResult(BaseModel):
@@ -117,8 +132,8 @@ class SampleResult(BaseModel):
 
 
 def classify(result: SampleResult) -> Outcome:
-    if result.error_kind == ErrorKind.ENV:
-        return Outcome.ENV_ERROR
+    if result.error_kind is not None:
+        return ERROR_OUTCOMES[result.error_kind]
     if result.error is not None or result.output is None or result.score is None:
         return Outcome.API_ERROR
     if result.score.value >= 1.0:
