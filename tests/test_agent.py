@@ -138,6 +138,49 @@ def test_bad_tool_calls_are_reported_to_the_model():
     assert r.output.finish_reason == "submit"
 
 
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        ("{not json", "could not parse tool arguments"),
+        ("[1, 2]", "must be a JSON object"),
+        ('{"answer": {"a": 1}}', "'answer' must be a string"),
+        ('{"answer": true}', "'answer' must be a string"),
+    ],
+)
+def test_invalid_submit_is_rejected_and_the_agent_can_retry(arguments, error):
+    model = scripted(
+        tool_turn(call("submit", arguments)),
+        tool_turn(call("submit", '{"answer": "fixed"}')),
+    )
+    (r,), _ = run(agent_task(), model)
+    assert error in r.steps[0].observations[0]
+    assert "Nothing was submitted" in r.steps[0].observations[0]
+    assert len(r.steps) == 2
+    assert (r.output.finish_reason, r.output.text) == ("submit", "fixed")
+
+
+def test_numeric_answer_is_accepted():
+    (r,), _ = run(agent_task(), scripted(tool_turn(call("submit", '{"answer": 42}'))))
+    assert (r.output.finish_reason, r.output.text) == ("submit", "42")
+
+
+def test_calls_after_submit_in_the_same_turn_are_not_executed():
+    model = scripted(
+        tool_turn(
+            call("bash", '{"command": "echo before > /app/a"}'),
+            call("submit", "{}"),
+            call("bash", '{"command": "echo after > /app/b"}'),
+        )
+    )
+    (r,), provider = run(agent_task(), model)
+    sandbox = provider.created[0]
+    assert "echo before > /app/a" in sandbox.commands
+    assert "echo after > /app/b" not in sandbox.commands
+    assert r.steps[0].observations[2] == "Not executed: submit was already called in this turn."
+    tool_ids = [m["tool_call_id"] for m in r.messages if m["role"] == "tool"]
+    assert len(tool_ids) == 3
+
+
 def test_sandbox_creation_failure_is_env_error():
     model = scripted(tool_turn(call("submit", "{}")))
     (r,), _ = run(agent_task(), model, FakeProvider(fail=True))
