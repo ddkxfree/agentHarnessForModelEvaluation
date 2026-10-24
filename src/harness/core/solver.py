@@ -33,6 +33,10 @@ class Solver(Protocol):
 
     def describe(self) -> dict[str, Any]: ...
 
+    # Optional: ``protocol() -> dict`` states how the solver talks to the model (interface,
+    # tools, how it finishes, what one step is, what it needs from the model and task). It
+    # goes into the manifest next to ``describe()`` so solver comparisons can say what differed.
+
 
 class PromptSolver:
     """Single-turn solver: optional system prompt, few-shot turns, then the question."""
@@ -84,3 +88,12 @@ class PromptSolver:
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc
+
+    def protocol(self) -> dict[str, Any]:
+        return {
+            "interface": "single_turn",
+            "tools": [],
+            "finish": "the single reply is the answer",
+            "step": "one model call",
+            "requires": [],
+        }

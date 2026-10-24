@@ -28,7 +28,8 @@ from harness.core.task import DatasetSpec, Task, register, select
 from harness.core.trajectory import current_trajectory
 from harness.core.types import ModelOutput, Sample, Score, SolveResult
 from harness.sandbox.base import Sandbox, SandboxError, SandboxSpec
-from harness.solvers.basic_agent import BasicAgent
+from harness.solvers.basic_agent import BasicAgent, agent_only, observation_limit
+from harness.solvers.oracle import REFERENCE_PROTOCOL
 
 DATASET = DatasetSpec(
     path="SWE-bench/SWE-bench_Lite",
@@ -230,6 +231,9 @@ class GoldPatchSolver:
         desc["fingerprint"] = fingerprint(desc)
         return desc
 
+    def protocol(self) -> dict[str, Any]:
+        return REFERENCE_PROTOCOL
+
 
 def sandbox_spec(sample: Sample) -> SandboxSpec:
     # The eval script runs `pip install -e .`, which may need the network.
@@ -248,8 +252,11 @@ def swebench(
     time_limit: float | None = 3600.0,
     command_timeout: float = 120.0,
     eval_timeout: float = 1800.0,
+    token_limit: int | None = None,
+    max_observation_chars: int | None = None,
 ) -> Task:
     require_swebench()
+    agent_only(solver, max_observation_chars=max_observation_chars)
 
     def load() -> list[Sample]:
         rows = _rows()
@@ -268,7 +275,7 @@ def swebench(
             workdir=WORKDIR,
             max_steps=max_steps,
             command_timeout=command_timeout,
-            max_observation_chars=8000,
+            **observation_limit(max_observation_chars or 8000),
         )
     elif solver == "mini":
         from harness.solvers.mini_swe_agent import MiniSweAgent
@@ -296,7 +303,10 @@ def swebench(
             "command_timeout": command_timeout,
             "time_limit": time_limit,
             "eval_timeout": eval_timeout,
+            "token_limit": token_limit,
+            "max_observation_chars": max_observation_chars,
         },
         sandbox=sandbox_spec,
         time_limit=time_limit,
+        token_limit=token_limit,
     )

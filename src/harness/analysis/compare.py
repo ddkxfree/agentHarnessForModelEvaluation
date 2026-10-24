@@ -46,6 +46,23 @@ NOTES = {
     "ablation": "Each condition changes exactly one parameter of the baseline (first) condition.",
 }
 
+# Parameters that limit how much work a solver may do on one sample. An ablation that changes
+# one of them measures sensitivity to the budget, not the effect of a mechanism.
+BUDGET_KEYS = ("max_steps", "time_limit", "token_limit", "command_timeout")
+
+EXPERIMENT_NOTES = {
+    "solver_comparison": NOTES["solver_comparison"],
+    "budget_sensitivity": (
+        "Conditions change a budget, not the agent: differences show how the result depends "
+        "on the budget and say nothing about which mechanism is better."
+    ),
+    "mechanism_ablation": (
+        "Conditions change one mechanism of the agent under the same budgets, so differences "
+        "can be attributed to that mechanism (within the statistical uncertainty)."
+    ),
+    "mixed": "Some conditions change a budget and others a mechanism; read them separately.",
+}
+
 
 class Condition(BaseModel):
     label: str
@@ -275,6 +292,7 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
             Counter((r.output.finish_reason or "none") if r.output else "none" for r in results)
         ),
         "mean_steps": sum(len(r.steps) for r in results) / n if n else 0.0,
+        "steps_without_tool_calls": sum(1 for r in results for s in r.steps if not s.tool_calls),
         "cached_outputs": sum(1 for r in results if r.output and r.output.cached),
         "fresh_calls": sum(r.calls.fresh for r in results),
         "cached_calls": sum(r.calls.cached for r in results),
@@ -306,6 +324,25 @@ def _relevant_changes(a: dict[str, Any], b: dict[str, Any]) -> list[list[Any]]:
         # repeat k is epoch k by design
         if not key.startswith("run_config.compare.") and not key.endswith(".epochs")
     ]
+
+
+def budgets(manifest: dict[str, Any], task_name: str) -> dict[str, Any]:
+    """The budgets a run actually used, read from its manifest."""
+    entry = next((t for t in manifest.get("tasks", []) if t.get("name") == task_name), {})
+    params = entry.get("params") or {}
+    return {
+        "max_steps": params.get("max_steps"),
+        "command_timeout": params.get("command_timeout"),
+        "time_limit": entry.get("time_limit"),
+        "token_limit": entry.get("token_limit"),
+    }
+
+
+def experiment_type(spec: CompareSpec, condition: Condition) -> str:
+    if spec.kind == "solver_comparison":
+        return "solver_comparison"
+    changed = [k for k, v in condition.params.items() if spec.params.get(k, _MISSING) != v]
+    return "budget_sensitivity" if set(changed) & set(BUDGET_KEYS) else "mechanism_ablation"
 
 
 def environment_drift(runs: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -363,7 +400,7 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
     per_sample: dict[str, dict[str, str]] = {i: {} for i in sample_ids}
     # Per condition: fraction of its runs that solved each sample.
     rates: dict[str, dict[str, float]] = {}
-    for condition in spec.conditions:
+    for condition_index, condition in enumerate(spec.conditions):
         label_runs = sorted(runs[condition.label], key=lambda r: r["repeat"])
         summaries = [_run_summary(r["results"]) for r in label_runs]
         totals: Counter[str] = Counter()
@@ -376,6 +413,8 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         first = label_runs[0]["manifest"] if label_runs else {}
         conditions[condition.label] = {
             "params": spec.params_for(condition),
+            "experiment_type": experiment_type(spec, condition) if condition_index else None,
+            "budgets": budgets(first, task_name) if first else None,
             "runs": [
                 {
                     "repeat": r["repeat"],
@@ -396,6 +435,7 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
             "mean_output_tokens": _mean([s["output_tokens"] for s in summaries]),
             "mean_wall_time_s": _mean(walls),
             "mean_steps": _mean([s["mean_steps"] for s in summaries]),
+            "steps_without_tool_calls": sum(s["steps_without_tool_calls"] for s in summaries),
             "outcomes": {o.value: totals.get(o.value, 0) for o in Outcome},
             "finish_reasons": dict(finish.most_common()),
             "cached_outputs": sum(s["cached_outputs"] for s in summaries),
@@ -452,9 +492,19 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         if runs[c.label] and base_manifest
     }
 
+    types = {c["experiment_type"] for c in conditions.values() if c["experiment_type"]}
+    kind = types.pop() if len(types) == 1 else "mixed"
+    recorded = [c["budgets"] for c in conditions.values() if c["budgets"] is not None]
+    equal_budget = len(recorded) == len(conditions) and all(b == recorded[0] for b in recorded)
+
     return {
         "kind": spec.kind,
         "note": NOTES[spec.kind],
+        "experiment_type": kind,
+        "experiment_note": EXPERIMENT_NOTES[kind],
+        # Every condition ran with the same max_steps, time, token and command limits. A solver
+        # comparison or mechanism ablation without equal budgets is confounded by them.
+        "equal_budget": equal_budget,
         "task": task_name,
         "model": spec.model,
         "generate": spec.generate.model_dump(),

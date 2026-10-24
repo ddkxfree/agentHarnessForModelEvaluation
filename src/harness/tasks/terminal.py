@@ -21,7 +21,7 @@ from harness.core.solver import Solver
 from harness.core.task import DatasetSpec, Task, register, select
 from harness.core.types import Sample, Score
 from harness.sandbox.base import Sandbox, SandboxSpec
-from harness.solvers.basic_agent import BasicAgent
+from harness.solvers.basic_agent import BasicAgent, agent_only, observation_limit
 from harness.solvers.oracle import OracleSolver
 
 DATA_DIR = Path(__file__).parent / "terminal_data"
@@ -86,6 +86,8 @@ def terminal(
     time_limit: float | None = 900.0,
     command_timeout: float = 60.0,
     root: str | None = None,
+    token_limit: int | None = None,
+    max_observation_chars: int | None = None,
 ) -> Task:
     data_dir = Path(root) if root else DATA_DIR
     dataset = DatasetSpec(
@@ -100,9 +102,14 @@ def terminal(
             samples = [s for s in samples if s.id.removeprefix("terminal/") in ids]
         return select(samples, limit, seed)
 
+    agent_only(solver, max_observation_chars=max_observation_chars)
     chosen: Solver
     if solver == "agent":
-        chosen = BasicAgent(max_steps=max_steps, command_timeout=command_timeout)
+        chosen = BasicAgent(
+            max_steps=max_steps,
+            command_timeout=command_timeout,
+            **observation_limit(max_observation_chars),
+        )
     elif solver == "mini":
         from harness.solvers.mini_swe_agent import MiniSweAgent
 
@@ -129,7 +136,10 @@ def terminal(
             "command_timeout": command_timeout,
             "time_limit": time_limit,
             "root": root,
+            "token_limit": token_limit,
+            "max_observation_chars": max_observation_chars,
         },
         sandbox=sandbox_spec,
         time_limit=time_limit,
+        token_limit=token_limit,
     )

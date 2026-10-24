@@ -70,6 +70,9 @@ def task_entry(task: Task, samples: list[Sample]) -> dict[str, Any]:
         "solver": task.solver.describe(),
         "scorer": task.scorer.describe(),
         "time_limit": task.time_limit,
+        "token_limit": task.token_limit,
+        # How the solver talks to the model, if it says (not part of its fingerprint).
+        "solver_protocol": task.solver.protocol() if hasattr(task.solver, "protocol") else None,
         "n_samples": len(samples),
         "sample_ids_sha256": fingerprint([s.id for s in samples]),
     }
