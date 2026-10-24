@@ -15,6 +15,7 @@ it. ``build_report`` reads them back offline.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -26,10 +27,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from harness.analysis import environment
 from harness.analysis.diff import diff_manifests
+from harness.analysis.stats import bootstrap_ci, paired_difference
 from harness.core.cache import DiskCache
 from harness.core.io import read_json, read_results, write_json
 from harness.core.model import Model
-from harness.core.runner import run_eval, use_cache
+from harness.core.runner import run_eval
 from harness.core.task import Task, get_task
 from harness.core.types import GenerateConfig, Outcome, SampleResult
 from harness.sandbox.base import SandboxProvider
@@ -63,7 +65,11 @@ class CompareSpec(BaseModel):
     concurrency: int = 2
     retries: int = 3
     cache: bool = True
-    cache_policy: Literal["auto", "always", "never"] = "never"
+    # Repeat k runs as epoch k, so repeats never share cached outputs, while resuming an
+    # interrupted comparison reuses what was already generated. A comparison started without
+    # a namespace gets its own (its directory name), so it does not replay an earlier one.
+    cache_policy: Literal["auto", "always", "never"] = "always"
+    cache_namespace: str | None = None
     cache_dir: Path = Path(".cache/requests")
     output_dir: Path = Path("runs")
 
@@ -104,11 +110,6 @@ class CompareSpec(BaseModel):
                         "changing the solver is not a single-variable ablation; "
                         "use kind: solver_comparison"
                     )
-        if self.repeats > 1 and self.cache and use_cache(self.cache_policy, self.generate):
-            raise ValueError(
-                "repeats would replay cached model outputs; set cache_policy: never "
-                "(or auto with temperature > 0)"
-            )
         return self
 
     def params_for(self, condition: Condition) -> dict[str, Any]:
@@ -137,12 +138,71 @@ async def run_comparison(
         i += 1
         compare_dir = compare_dir.with_name(f"compare-{stamp}-{spec.task}-{i}")
     compare_dir.mkdir(parents=True)
+    if spec.cache_namespace is None:
+        spec = spec.model_copy(update={"cache_namespace": compare_dir.name})
     index: dict[str, Any] = {"spec": spec.model_dump(mode="json"), "runs": []}
     write_json(compare_dir / "index.json", index)
+    return await _run_missing(
+        compare_dir,
+        index,
+        model,
+        sandbox_provider=sandbox_provider,
+        make_task=make_task,
+        progress=progress,
+    )
 
+
+async def resume_comparison(
+    compare_dir: Path,
+    model: Model,
+    *,
+    sandbox_provider: SandboxProvider | None = None,
+    make_task: TaskFactory = get_task,
+    progress: Any | None = None,
+) -> Path:
+    """Finish an interrupted comparison with its recorded spec.
+
+    Runs that completed are kept. Missing or unfinished runs are run again in the same cache
+    namespace and epoch, so with caching on, samples generated before the interruption are
+    replayed instead of being sampled anew. Replaced runs are listed under ``superseded``.
+    """
+    compare_dir = Path(compare_dir)
+    index = read_json(compare_dir / "index.json")
+    kept = []
+    for entry in index["runs"]:
+        manifest = read_json(compare_dir / entry["run_dir"] / "manifest.json")
+        (
+            kept if manifest.get("status") == "completed" else index.setdefault("superseded", [])
+        ).append(entry)
+    index["runs"] = kept
+    index.setdefault("resumed_at", []).append(datetime.now(UTC).isoformat())
+    write_json(compare_dir / "index.json", index)
+    return await _run_missing(
+        compare_dir,
+        index,
+        model,
+        sandbox_provider=sandbox_provider,
+        make_task=make_task,
+        progress=progress,
+    )
+
+
+async def _run_missing(
+    compare_dir: Path,
+    index: dict[str, Any],
+    model: Model,
+    *,
+    sandbox_provider: SandboxProvider | None,
+    make_task: TaskFactory,
+    progress: Any | None,
+) -> Path:
+    spec = CompareSpec.model_validate(index["spec"])
+    done = {(e["label"], e["repeat"]) for e in index["runs"]}
     cache = DiskCache(spec.cache_dir) if spec.cache else None
     for repeat in range(1, spec.repeats + 1):
         for condition in spec.conditions:
+            if (condition.label, repeat) in done:
+                continue
             task = make_task(spec.task, **spec.params_for(condition))
             run_dir = await run_eval(
                 model,
@@ -159,6 +219,8 @@ async def run_comparison(
                 progress=progress,
                 sandbox_provider=sandbox_provider,
                 cache_policy=spec.cache_policy,
+                first_epoch=repeat,
+                namespace=spec.cache_namespace,
             )
             index["runs"].append(
                 {
@@ -203,11 +265,19 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _std(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    m = sum(values) / len(values)
+    return math.sqrt(sum((v - m) ** 2 for v in values) / (len(values) - 1))
+
+
 def _relevant_changes(a: dict[str, Any], b: dict[str, Any]) -> list[list[Any]]:
     return [
         [key, va, vb]
         for key, va, vb in diff_manifests(a, b)
-        if not key.startswith("run_config.compare.")
+        # repeat k is epoch k by design
+        if not key.startswith("run_config.compare.") and not key.endswith(".epochs")
     ]
 
 
@@ -263,6 +333,8 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
 
     conditions: dict[str, Any] = {}
     per_sample: dict[str, dict[str, str]] = {i: {} for i in sample_ids}
+    # Per condition: fraction of its runs that solved each sample.
+    rates: dict[str, dict[str, float]] = {}
     for condition in spec.conditions:
         label_runs = sorted(runs[condition.label], key=lambda r: r["repeat"])
         summaries = [_run_summary(r["results"]) for r in label_runs]
@@ -284,6 +356,7 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
                 "mean": _mean(accuracies),
                 "min": min(accuracies) if accuracies else None,
                 "max": max(accuracies) if accuracies else None,
+                "std_over_repeats": _std(accuracies),
             },
             "mean_input_tokens": _mean([s["input_tokens"] for s in summaries]),
             "mean_output_tokens": _mean([s["output_tokens"] for s in summaries]),
@@ -303,11 +376,15 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
                 if _relevant_changes(first, r["manifest"])
             ],
         }
+        rates[condition.label] = {}
         for i in sample_ids:
-            solved = sum(
-                any(_solved(x) for x in r["results"] if x.sample.id == i) for r in label_runs
-            )
-            per_sample[i][condition.label] = f"{solved}/{len(label_runs)}"
+            present = [r for r in label_runs if any(x.sample.id == i for x in r["results"])]
+            solved = sum(any(_solved(x) for x in r["results"] if x.sample.id == i) for r in present)
+            per_sample[i][condition.label] = f"{solved}/{len(present)}"
+            if present:
+                rates[condition.label][i] = solved / len(present)
+        lo, hi = bootstrap_ci(list(rates[condition.label].values()))
+        conditions[condition.label]["accuracy"]["ci95_over_samples"] = [lo, hi]
 
     drift = environment_drift(runs)
     repeat_changes = any(c["repeat_config_changes"] for c in conditions.values())
@@ -319,6 +396,9 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
     same_samples = len(set(sample_sets.values())) <= 1
 
     baseline = spec.conditions[0].label
+    paired = {
+        c.label: paired_difference(rates[baseline], rates[c.label]) for c in spec.conditions[1:]
+    }
     base_manifest = runs[baseline][0]["manifest"] if runs[baseline] else {}
     condition_changes = {
         c.label: _relevant_changes(base_manifest, runs[c.label][0]["manifest"])
@@ -344,6 +424,8 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         "samples": sample_ids,
         "conditions": conditions,
         "per_sample_solved": per_sample,
+        # Per-sample solve rates of each condition against the baseline on the same samples.
+        "paired_vs_baseline": paired,
         # Manifest fields that differ from the baseline's first run: the intended change plus
         # anything else that differs, which would confound the comparison.
         "config_changes_vs_baseline": condition_changes,

@@ -38,7 +38,7 @@ async def _verify_sample(
     provider: SandboxProvider,
     task_dir: Path,
 ) -> tuple[dict[str, Any], Score | Exception | None]:
-    row: dict[str, Any] = {"sample_id": r.sample.id, "recorded": _brief(r.score)}
+    row: dict[str, Any] = {"sample_id": r.sample.id, "epoch": r.epoch, "recorded": _brief(r.score)}
     sub = next((a for a in r.artifacts if a.name == SUBMISSION_ARTIFACT), None)
     if sub is None or sub.path is None:
         row["status"] = "no_submission"
@@ -52,7 +52,7 @@ async def _verify_sample(
         row["status"] = "submission_hash_mismatch"
         return row, None
 
-    trajectory = Trajectory(task_dir / "verify", sample_dirname(r.sample.id))
+    trajectory = Trajectory(task_dir / "verify", sample_dirname(r.sample.id, r.epoch))
     labels = {"harness.task": task.name, "harness.sample": r.sample.id, "harness.phase": "verify"}
     assert task.sandbox is not None
     new: Score | Exception

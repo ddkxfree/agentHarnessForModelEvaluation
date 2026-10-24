@@ -81,10 +81,11 @@ def test_conditions_are_repeated_and_reported_side_by_side(tmp_path):
     report = read_json(compare_dir / "compare.json")
     assert report["kind"] == "solver_comparison" and "whole agent" in report["note"]
     assert report["complete"] and report["same_samples_in_every_run"]
-    assert report["cache_policy"] == "never"
+    assert report["cache_policy"] == "always"
 
     plain, careful = report["conditions"]["plain"], report["conditions"]["careful"]
-    assert plain["accuracy"] == {"mean": 0.5, "min": 0.5, "max": 0.5}
+    acc = plain["accuracy"]
+    assert (acc["mean"], acc["min"], acc["max"], acc["std_over_repeats"]) == (0.5, 0.5, 0.5, 0.0)
     assert careful["accuracy"]["mean"] == 1.0
     assert (plain["mean_input_tokens"], plain["mean_output_tokens"]) == (40, 8)
     assert careful["mean_output_tokens"] == 12
@@ -220,8 +221,6 @@ def test_runs_on_different_samples_are_flagged(tmp_path):
             },
             "baseline",
         ),
-        ({"cache_policy": "auto"}, "replay cached"),
-        ({"cache_policy": "always", "generate": {"temperature": 0.7}}, "replay cached"),
     ],
 )
 def test_invalid_comparisons_are_rejected(tmp_path, overrides, message):

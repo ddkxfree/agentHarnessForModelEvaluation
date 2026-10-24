@@ -43,10 +43,20 @@ log = logging.getLogger(__name__)
 CLOSE_TIMEOUT = 120.0
 
 
-def sample_dirname(sample_id: str) -> str:
+def sample_dirname(sample_id: str, epoch: int = 1) -> str:
     """Readable, collision-free directory name for a sample's artifacts."""
     digest = hashlib.sha256(sample_id.encode()).hexdigest()[:8]
-    return f"{_slug(sample_id)}-{digest}"
+    name = f"{_slug(sample_id)}-{digest}"
+    return name if epoch == 1 else f"{name}-e{epoch}"
+
+
+def cache_namespace(namespace: str | None, epoch: int) -> str | None:
+    """Cache namespace of one epoch. Epochs never share cached outputs, while re-running the
+    same epoch (e.g. resuming an interrupted run) does. Epoch 1 without a namespace keeps the
+    keys of runs made before epochs existed."""
+    if namespace is None and epoch == 1:
+        return None
+    return f"{namespace or ''}#epoch={epoch}"
 
 
 async def close_sandbox(sandbox: Sandbox, sample_id: str) -> str | None:
@@ -100,11 +110,14 @@ async def run_samples(
     on_done: Callable[[SampleResult], None] | None = None,
     sandbox_provider: SandboxProvider | None = None,
     artifact_dir: Path | None = None,
+    epoch: int = 1,
+    namespace: str | None = None,
 ) -> list[SampleResult]:
     """Solve and score every sample. ``artifact_dir`` receives files such as untruncated tool
     outputs, one subdirectory per sample; without it only their hashes are recorded."""
     sem = asyncio.Semaphore(concurrency)
     model_spec = model.spec()
+    key_namespace = cache_namespace(namespace, epoch)
     if task.sandbox is not None and sandbox_provider is None:
         raise ValueError(f"task {task.name!r} needs a sandbox provider")
 
@@ -112,7 +125,7 @@ async def run_samples(
         return is_timeout(exc) or model.is_retryable(exc)
 
     async def run_one(sample: Sample) -> SampleResult:
-        result = SampleResult(sample=sample)
+        result = SampleResult(sample=sample, epoch=epoch)
         served: set[str] = set()
         # identities carried by cached outputs: where those responses originally came from
         served_cached: set[str] = set()
@@ -123,7 +136,7 @@ async def run_samples(
         async def generate(
             messages: list[Message], tools: list[dict[str, Any]] | None = None
         ) -> ModelOutput:
-            key = cache_key(model_spec, messages, config, tools)
+            key = cache_key(model_spec, messages, config, tools, key_namespace)
             if cache is not None and (hit := cache.get(key)) is not None:
                 if (identity := hit.served_identity()) is not None:
                     served_cached.add(identity)
@@ -171,8 +184,10 @@ async def run_samples(
             if (error := await close_sandbox(sandbox, sample.id)) is not None:
                 result.cleanup_error = "; ".join(filter(None, [result.cleanup_error, error]))
 
-        trajectory = Trajectory(artifact_dir, sample_dirname(sample.id))
+        trajectory = Trajectory(artifact_dir, sample_dirname(sample.id, epoch))
         labels = {"harness.task": task.name, "harness.sample": sample.id}
+        if epoch != 1:
+            labels["harness.epoch"] = str(epoch)
         async with sem:
             started = time.perf_counter()
             sandbox: Sandbox | None = None
@@ -263,12 +278,20 @@ async def run_eval(
     progress: Any | None = None,
     sandbox_provider: SandboxProvider | None = None,
     cache_policy: CachePolicy = "auto",
+    epochs: int = 1,
+    first_epoch: int = 1,
+    namespace: str | None = None,
 ) -> Path:
     """Run every task, writing per-sample logs, summaries and a manifest under one run dir.
 
     ``progress`` is an optional ``rich.progress.Progress`` used to display progress.
     ``cache_policy`` decides per task whether ``cache`` is used; see ``use_cache``.
+    Every sample is run ``epochs`` times, numbered from ``first_epoch``; each epoch has its own
+    cache namespace (see ``cache_namespace``).
     """
+    if epochs < 1:
+        raise ValueError("epochs must be at least 1")
+    epoch_numbers = list(range(first_epoch, first_epoch + epochs))
     run_dir = new_run_dir(Path(output_dir), model)
     manifest: dict[str, Any] = {
         "run_id": run_dir.name,
@@ -290,13 +313,19 @@ async def run_eval(
             entry = task_entry(task, samples)
             entry["generate_config"] = config.model_dump()
             reuse = cache is not None and use_cache(cache_policy, config)
-            entry["cache"] = {"enabled": cache is not None, "policy": cache_policy, "used": reuse}
+            entry["cache"] = {
+                "enabled": cache is not None,
+                "policy": cache_policy,
+                "used": reuse,
+                "namespace": namespace,
+            }
+            entry["epochs"] = epoch_numbers
             if task.sandbox is not None and sandbox_provider is not None:
                 entry["sandbox_provider"] = sandbox_provider.describe()
             manifest["tasks"].append(entry)
             write_json(manifest_path, manifest)
 
-            bar = progress.add_task(task.name, total=len(samples)) if progress else None
+            bar = progress.add_task(task.name, total=len(samples) * epochs) if progress else None
             task_dir = run_dir / task.name
             samples_path = task_dir / "samples.jsonl"
             samples_path.parent.mkdir(parents=True, exist_ok=True)
@@ -310,18 +339,22 @@ async def run_eval(
                     if progress is not None:
                         progress.advance(bar)
 
-                results = await run_samples(
-                    task,
-                    samples,
-                    model,
-                    config,
-                    cache=cache if reuse else None,
-                    concurrency=concurrency,
-                    retries=retries,
-                    on_done=on_done,
-                    sandbox_provider=sandbox_provider,
-                    artifact_dir=task_dir / "artifacts",
-                )
+                results = []
+                for epoch in epoch_numbers:
+                    results += await run_samples(
+                        task,
+                        samples,
+                        model,
+                        config,
+                        cache=cache if reuse else None,
+                        concurrency=concurrency,
+                        retries=retries,
+                        on_done=on_done,
+                        sandbox_provider=sandbox_provider,
+                        artifact_dir=task_dir / "artifacts",
+                        epoch=epoch,
+                        namespace=namespace,
+                    )
             summary = summarize(results)
             write_results(samples_path, results)
             write_json(run_dir / task.name / "summary.json", summary)

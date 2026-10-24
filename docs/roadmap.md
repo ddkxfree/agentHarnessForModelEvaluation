@@ -35,7 +35,8 @@
 - 加固第四轮（真实 Terminal-Bench 2.0，5 题）已实现，待复评：见 [09](progress/09-terminal-bench.md)。
 - 加固第五轮（Solver 对照，`harness compare`）已实现并在自建终端任务上实测，待复评：见 [10](progress/10-solver-comparison.md)。
 - 11 的 N1～N4 已补修，待复评：见 [12](progress/12-stage5-followup-fixes.md)。PR #7～#10 原先只合并进叠加分支，由 PR #11 合入 master。
-- 221 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
+- 阶段 7 最小版（重复实验、恢复、配对统计、失败报告）已实现，MockModel 测试通过，真实多 epoch 运行待验证：见 [13](progress/13-statistics-diagnostics.md)。
+- 231 个测试（Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
@@ -78,10 +79,10 @@
 
 ### 阶段 7：统计与诊断
 
-1. 同一配置跑 N 次（`--epochs`），缓存键加入 epoch，报告均值、标准差和置信区间。
-2. 两个模型的配对比较与显著性检验（同一批题）。
-3. `harness diff` 增加"可能原因"提示：配置变化、环境变化、输出完全相同但打分变化（说明是 scorer 改动）等。
-4. 错误归类报告：自动抽样各类失败样本，生成 Markdown 报告。
+1. ~~同一配置跑 N 次（`--epochs`），缓存键加入 epoch，报告均值、标准差和置信区间。~~ 已实现（[13](progress/13-statistics-diagnostics.md)），真实运行待验证
+2. ~~两个模型的配对比较与显著性检验（同一批题）。~~ 已实现：`diff` 与 `compare` 的配对差、bootstrap 区间、符号检验
+3. ~~`harness diff` 增加"可能原因"提示：配置变化、环境变化、输出完全相同但打分变化（说明是 scorer 改动）等。~~ 已实现：`likely_causes`
+4. ~~错误归类报告：自动抽样各类失败样本，生成 Markdown 报告。~~ 已实现：`harness report`
 
 ### 阶段 8：评测集接入 Agent 化
 

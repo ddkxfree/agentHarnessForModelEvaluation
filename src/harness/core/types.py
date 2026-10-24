@@ -147,6 +147,8 @@ ERROR_OUTCOMES = {
 
 class SampleResult(BaseModel):
     sample: Sample
+    # Which repetition of the sample this is; see ``runner.run_eval(epochs=...)``.
+    epoch: int = 1
     messages: list[Message] = Field(default_factory=list)
     output: ModelOutput | None = None
     steps: list[Step] = Field(default_factory=list)
