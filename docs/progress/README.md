@@ -12,5 +12,6 @@
 | [06](06-review-fixes.md) | 修复 R1～R3：验证脚本拒绝 NaN、长小数精确比较、重评恢复评分故障 | 阶段 5 加固第一轮补修 |
 | [07](07-traceability.md) | 失败可追踪：中途失败保留轨迹、单样本落盘、完整输出另存、清理失败记录、样本时限与线程取消 | 阶段 5 加固第二轮 |
 | [08](08-independent-verification.md) | 独立复核：完整产物与哈希、镜像与平台身份、服务端模型标识、缓存策略、SWE-bench 新容器评分与 `harness verify` | 阶段 5 加固第三轮 |
+| [09](09-terminal-bench.md) | 接入真实 Terminal-Bench 2.0：固定提交与镜像 digest 的 5 道题，按 Harbor 流程判分，Oracle 5/5、不操作 0/5 | 阶段 5 加固第四轮 |
 
 想在自己电脑上跑起来，见 [上手练习指南](../hands-on.md)。

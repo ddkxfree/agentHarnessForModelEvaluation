@@ -82,6 +82,7 @@ DEVIATIONS = [
     "not mounted from the host for the whole trial",
     "the agent runs as a harness Solver (basic_agent or mini-swe-agent), not a Harbor agent",
     "storage_mb and gpus from task.toml are not enforced",
+    "a verifier timeout scores 0 instead of failing the trial",
 ]
 
 

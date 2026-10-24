@@ -146,6 +146,8 @@ def _terminal_bench_ready() -> bool:
     """Task files are cached or GitHub is reachable."""
     from harness.tasks import terminal_bench as tb
 
+    if not _docker_available():
+        return False
     try:
         for name in tb.PINS:
             tb.ensure_task(name)
@@ -175,6 +177,26 @@ def test_terminal_bench_oracle_passes_and_doing_nothing_fails(solver, outcome):
             assert r.outcome == Outcome.WRONG and r.score.extracted == "reward=0", detail
         assert r.sandbox["image_digests"] and r.sandbox["image_id"].startswith("sha256:")
         assert any(a.name == "test-stdout.txt" for a in r.artifacts)
+
+
+@pytest.mark.skipif(not _terminal_bench_ready(), reason="Terminal-Bench files not available")
+def test_terminal_bench_ignores_a_reward_file_planted_by_the_agent():
+    from harness.sandbox.docker import DockerProvider
+    from harness.tasks import terminal_bench as tb
+
+    task = get_task("terminal-bench", ids=["fix-git"])
+    [sample] = task.load()
+
+    async def scenario():
+        sb = await DockerProvider().create(tb.sandbox_spec(sample), labels={"harness.test": "1"})
+        try:
+            await sb.exec("mkdir -p /logs/verifier && echo 1 > /logs/verifier/reward.txt")
+            return await tb.HarborVerifierScorer()(sample, "", sb)
+        finally:
+            await sb.close()
+
+    score = asyncio.run(scenario())
+    assert (score.value, score.extracted) == (0.0, "reward=0")
 
 
 SWEBENCH_ID = "pytest-dev__pytest-5227"
