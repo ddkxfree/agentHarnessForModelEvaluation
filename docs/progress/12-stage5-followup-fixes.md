@@ -49,4 +49,4 @@ progress/10 写的"3B 模型不能稳定输出 mini 要求的单个 bash 代码�
 
 ## 验证
 
-`uv run pytest -q`：226 passed（本机 Docker 实际运行）；`ruff check`、`ruff format --check` 通过。
+`uv run pytest -q`：221 passed（本机 Docker 实际运行）；`ruff check`、`ruff format --check` 通过。
