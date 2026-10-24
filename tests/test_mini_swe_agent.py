@@ -163,8 +163,9 @@ def test_model_call_failures_through_the_bridge_are_api_errors():
             return ScriptSandbox({})
 
     task = get_task("terminal", solver="mini", ids=["hello-file"])
+    provider = Provider()
     [r] = asyncio.run(
-        run_samples(task, task.load(), MockModel(down), GenerateConfig(), sandbox_provider=Provider())
+        run_samples(task, task.load(), MockModel(down), GenerateConfig(), sandbox_provider=provider)
     )
     assert r.outcome == Outcome.API_ERROR
     assert r.error == "ValueError: provider down"
