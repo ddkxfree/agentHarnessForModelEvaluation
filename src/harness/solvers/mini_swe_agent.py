@@ -352,3 +352,17 @@ class MiniSweAgent:
         }
         desc["fingerprint"] = fingerprint(desc)
         return desc
+
+    def protocol(self) -> dict[str, Any]:
+        agent = self.mini_config["agent"]
+        return {
+            "interface": "native_tool_calls",
+            "tools": ["bash"],
+            "finish": "a command whose output starts with COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
+            "step": "one model call, then the commands it asked for",
+            "observation": "mini-swe-agent's observation_template (its own truncation)",
+            "format_errors": "a reply without a valid tool call is answered with a format error "
+            f"and counts as a step; {agent.get('max_consecutive_format_errors')} in a row end "
+            "the episode",
+            "requires": ["model tool calling", "sandbox"],
+        }

@@ -40,6 +40,10 @@ class Usage(BaseModel):
             output_tokens=self.output_tokens + other.output_tokens,
         )
 
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
 
 class ToolCall(BaseModel):
     id: str
@@ -122,6 +126,7 @@ class Outcome(StrEnum):
     TRUNCATED = "truncated"
     STEP_LIMIT = "step_limit"
     TIME_LIMIT = "time_limit"
+    TOKEN_LIMIT = "token_limit"
     API_ERROR = "api_error"
     SOLVER_ERROR = "solver_error"
     SCORER_ERROR = "scorer_error"
@@ -204,6 +209,8 @@ def classify(result: SampleResult) -> Outcome:
         return Outcome.STEP_LIMIT
     if result.output.finish_reason == "time_limit":
         return Outcome.TIME_LIMIT
+    if result.output.finish_reason == "token_limit":
+        return Outcome.TOKEN_LIMIT
     if result.score.extracted is None:
         return Outcome.EXTRACT_FAILED
     return Outcome.WRONG

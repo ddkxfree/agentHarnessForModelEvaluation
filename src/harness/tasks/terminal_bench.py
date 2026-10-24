@@ -35,7 +35,8 @@ from harness.core.task import DatasetSpec, Task, register, select
 from harness.core.trajectory import current_trajectory
 from harness.core.types import ModelOutput, Sample, Score, SolveResult
 from harness.sandbox.base import Sandbox, SandboxError, SandboxSpec
-from harness.solvers.basic_agent import BasicAgent
+from harness.solvers.basic_agent import BasicAgent, agent_only, observation_limit
+from harness.solvers.oracle import REFERENCE_PROTOCOL
 
 REPO = "laude-institute/terminal-bench-2"
 COMMIT = "2fd12b88aafdd04a52c298e3940bcb189f9766d6"
@@ -269,6 +270,9 @@ class HarborOracleSolver:
         desc["fingerprint"] = fingerprint(desc)
         return desc
 
+    def protocol(self) -> dict[str, Any]:
+        return REFERENCE_PROTOCOL
+
 
 @register("terminal-bench")
 def terminal_bench(
@@ -280,6 +284,8 @@ def terminal_bench(
     time_limit: float | None = 900.0,
     command_timeout: float = 120.0,
     root: str | None = None,
+    token_limit: int | None = None,
+    max_observation_chars: int | None = None,
 ) -> Task:
     names = list(ids) if ids else list(PINS)
     unknown = sorted(set(names) - set(PINS))
@@ -296,9 +302,15 @@ def terminal_bench(
         samples = [load_task(ensure_task(n, base), PINS[n].image) for n in sorted(names)]
         return select(samples, limit, seed)
 
+    agent_only(solver, max_observation_chars=max_observation_chars)
     chosen: Solver
     if solver == "agent":
-        chosen = BasicAgent(workdir=None, max_steps=max_steps, command_timeout=command_timeout)
+        chosen = BasicAgent(
+            workdir=None,
+            max_steps=max_steps,
+            command_timeout=command_timeout,
+            **observation_limit(max_observation_chars),
+        )
     elif solver == "mini":
         from harness.solvers.mini_swe_agent import MiniSweAgent
 
@@ -325,7 +337,10 @@ def terminal_bench(
             "time_limit": time_limit,
             "command_timeout": command_timeout,
             "root": root,
+            "token_limit": token_limit,
+            "max_observation_chars": max_observation_chars,
         },
         sandbox=sandbox_spec,
         time_limit=time_limit,
+        token_limit=token_limit,
     )
