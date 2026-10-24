@@ -76,6 +76,10 @@ def run(
         typer.Option(help="auto (reuse only at temperature 0), always or never"),
     ] = None,
     output_dir: Annotated[Path | None, typer.Option()] = None,
+    epochs: Annotated[int | None, typer.Option(help="Run every sample N times")] = None,
+    cache_namespace: Annotated[
+        str | None, typer.Option(help="Keep cached outputs apart from other namespaces")
+    ] = None,
 ) -> None:
     """Evaluate a model on one or more tasks."""
     from harness.core.cache import DiskCache
@@ -98,6 +102,8 @@ def run(
         ("retries", retries),
         ("output_dir", output_dir),
         ("cache_policy", cache_policy),
+        ("epochs", epochs),
+        ("cache_namespace", cache_namespace),
     ]:
         if value is not None:
             updates[key] = value
@@ -150,6 +156,8 @@ def run(
                 progress=progress,
                 sandbox_provider=sandbox_provider,
                 cache_policy=cfg.cache_policy,
+                epochs=cfg.epochs,
+                namespace=cfg.cache_namespace,
             )
         )
 
@@ -319,6 +327,18 @@ def diff(run_a: Path, run_b: Path, show_ids: Annotated[int, typer.Option()] = 10
         console.print(f"improvements ({len(t['improvements'])}): {t['improvements'][:show_ids]}")
         if t["outcome_transitions"]:
             console.print(f"outcome transitions: {t['outcome_transitions']}")
+        p = t["paired"]
+        if p["mean_difference"] is not None:
+            lo, hi = p["ci95"]
+            console.print(
+                f"paired b - a: {p['mean_difference']:+.3f} [{lo:+.3f}, {hi:+.3f}], "
+                f"sign test p={p['sign_test_p']:.3f}"
+                + ("" if p["enough_samples_for_claims"] else " (too few samples for claims)")
+            )
+    if d["likely_causes"]:
+        console.rule("likely causes")
+        for hint in d["likely_causes"]:
+            console.print(f"- {hint}")
 
 
 def _print_comparison(report: dict[str, Any]) -> None:
@@ -352,6 +372,16 @@ def _print_comparison(report: dict[str, Any]) -> None:
     for sample_id, row in report["per_sample_solved"].items():
         per_sample.add_row(sample_id, *row.values())
     console.print(per_sample)
+    for label, p in report["paired_vs_baseline"].items():
+        if p["mean_difference"] is None:
+            continue
+        lo, hi = p["ci95"]
+        console.print(
+            f"{label} - {report['baseline']}: {p['mean_difference']:+.3f} "
+            f"[{lo:+.3f}, {hi:+.3f}] on {p['n']} paired samples; better on {p['b_better']}, "
+            f"worse on {p['b_worse']}, sign test p={p['sign_test_p']:.3f}"
+            + ("" if p["enough_samples_for_claims"] else " (too few samples for claims)")
+        )
     for label, changes in report["config_changes_vs_baseline"].items():
         keys = ", ".join(k for k, _, _ in changes)
         console.print(f"{label} vs {report['baseline']} differs in: {keys}")
@@ -369,14 +399,25 @@ def _print_comparison(report: dict[str, Any]) -> None:
 
 @app.command()
 def compare(
-    config: Annotated[Path, typer.Option("--config", "-c", help="YAML comparison spec")],
+    config: Annotated[
+        Path | None, typer.Option("--config", "-c", help="YAML comparison spec")
+    ] = None,
+    resume: Annotated[
+        Path | None, typer.Option(help="Finish an interrupted comparison directory")
+    ] = None,
 ) -> None:
     """Run each condition of a comparison several times and report them side by side."""
-    from harness.analysis.compare import CompareSpec, run_comparison
+    from harness.analysis.compare import CompareSpec, resume_comparison, run_comparison
     from harness.core.model import get_model
     from harness.core.task import get_task
 
-    spec = CompareSpec.from_yaml(config)
+    if (config is None) == (resume is None):
+        raise typer.BadParameter("pass either --config or --resume")
+    if resume is not None:
+        spec = CompareSpec.model_validate(read_json(resume / "index.json")["spec"])
+    else:
+        assert config is not None
+        spec = CompareSpec.from_yaml(config)
     llm = get_model(spec.model, base_url=spec.base_url)
     sandbox_provider = None
     if get_task(spec.task, **spec.params_for(spec.conditions[0])).sandbox is not None:
@@ -391,10 +432,26 @@ def compare(
         console=console,
     ) as progress:
         compare_dir = asyncio.run(
-            run_comparison(spec, llm, sandbox_provider=sandbox_provider, progress=progress)
+            resume_comparison(resume, llm, sandbox_provider=sandbox_provider, progress=progress)
+            if resume is not None
+            else run_comparison(spec, llm, sandbox_provider=sandbox_provider, progress=progress)
         )
     _print_comparison(read_json(compare_dir / "compare.json"))
     console.print(f"results in {compare_dir}")
+
+
+@app.command()
+def report(
+    run_dir: Path,
+    per_outcome: Annotated[int, typer.Option(help="Examples per failure outcome")] = 3,
+    seed: Annotated[int, typer.Option(help="Seed for choosing examples")] = 0,
+) -> None:
+    """Write <run_dir>/report.md: outcome counts and sampled failures, no model calls."""
+    from harness.analysis.report import failure_report
+
+    path = run_dir / "report.md"
+    path.write_text(failure_report(run_dir, per_outcome=per_outcome, seed=seed))
+    console.print(f"wrote {path}")
 
 
 @app.command("compare-report")

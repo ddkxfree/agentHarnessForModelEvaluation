@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
+import math
+from collections import Counter, defaultdict
 from typing import Any
 
 import numpy as np
@@ -20,6 +21,73 @@ def bootstrap_ci(
     return float(lo), float(hi)
 
 
+# Below this many samples, paired results are reported but no significance claims are made.
+MIN_SAMPLES_FOR_CLAIMS = 30
+
+
+def sign_test(wins: int, losses: int) -> float:
+    """Exact two-sided sign test (McNemar's exact test for paired binary outcomes); ties are
+    dropped."""
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    k = min(wins, losses)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2**n
+    return min(1.0, 2 * tail)
+
+
+def paired_difference(a: dict[Any, float], b: dict[Any, float], *, seed: int = 0) -> dict[str, Any]:
+    """Compare per-item scores of B against A on the items both have.
+
+    The confidence interval resamples items (paired bootstrap), so it reflects which items
+    happened to be in the set; the sign test counts items where B is higher or lower.
+    """
+    common = sorted(a.keys() & b.keys(), key=str)
+    diffs = [b[k] - a[k] for k in common]
+    wins = sum(d > 0 for d in diffs)
+    losses = sum(d < 0 for d in diffs)
+    lo, hi = bootstrap_ci(diffs, seed=seed)
+    return {
+        "n": len(common),
+        "mean_a": sum(a[k] for k in common) / len(common) if common else None,
+        "mean_b": sum(b[k] for k in common) / len(common) if common else None,
+        "mean_difference": sum(diffs) / len(diffs) if diffs else None,
+        "ci95": [lo, hi],
+        "b_better": wins,
+        "b_worse": losses,
+        "ties": len(diffs) - wins - losses,
+        "sign_test_p": sign_test(wins, losses),
+        "enough_samples_for_claims": len(common) >= MIN_SAMPLES_FOR_CLAIMS,
+    }
+
+
+def epoch_stats(results: list[SampleResult]) -> dict[str, Any] | None:
+    """Accuracy per epoch and its spread; None for single-epoch runs."""
+    by_epoch: dict[int, list[float]] = defaultdict(list)
+    by_sample: dict[str, list[float]] = defaultdict(list)
+    for r in results:
+        value = r.score.value if r.score else 0.0
+        by_epoch[r.epoch].append(value)
+        by_sample[r.sample.id].append(value)
+    if len(by_epoch) < 2:
+        return None
+    per_epoch = {e: sum(v) / len(v) for e, v in sorted(by_epoch.items())}
+    accs = list(per_epoch.values())
+    mean = sum(accs) / len(accs)
+    std = math.sqrt(sum((x - mean) ** 2 for x in accs) / (len(accs) - 1))
+    # Items, not epochs, are the unit of resampling: average each sample over its epochs.
+    lo, hi = bootstrap_ci([sum(v) / len(v) for v in by_sample.values()])
+    return {
+        "n_epochs": len(accs),
+        "accuracy_per_epoch": {str(e): a for e, a in per_epoch.items()},
+        "mean": mean,
+        "std": std,
+        "ci95_over_samples": [lo, hi],
+        # Samples solved in some epochs but not others: where repetition matters.
+        "inconsistent_samples": sum(1 for v in by_sample.values() if 0 < sum(v) < len(v)),
+    }
+
+
 def summarize(results: list[SampleResult]) -> dict[str, Any]:
     n = len(results)
     # API errors count as failures: dropping them would inflate accuracy
@@ -28,7 +96,12 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
     methods = Counter((r.score.method or "none") for r in results if r.score)
     outputs = [r.output for r in results if r.output]
     fresh = [o.latency_s for o in outputs if not o.cached]
-    lo, hi = bootstrap_ci(values)
+    # Resample samples, not (sample, epoch) pairs: repeated epochs of one item are not
+    # independent evidence.
+    per_sample: dict[str, list[float]] = defaultdict(list)
+    for r, v in zip(results, values, strict=True):
+        per_sample[r.sample.id].append(v)
+    lo, hi = bootstrap_ci([sum(v) / len(v) for v in per_sample.values()])
     usages = [r.usage() for r in results]
     walls = [r.wall_time_s for r in results if r.wall_time_s is not None]
 
@@ -70,4 +143,5 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
         ),
         "mean_latency_s": sum(fresh) / len(fresh) if fresh else None,
         "agent": agent,
+        "epochs": epoch_stats(results),
     }

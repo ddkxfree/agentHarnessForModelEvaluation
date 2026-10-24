@@ -25,6 +25,10 @@ class RunConfig(BaseModel):
     cache: bool = True
     # auto: reuse cached outputs only at temperature 0; always; never. See runner.use_cache.
     cache_policy: Literal["auto", "always", "never"] = "auto"
+    # Separates cached outputs of otherwise identical requests, e.g. two independent attempts.
+    cache_namespace: str | None = None
+    # Run every sample this many times; each epoch has its own cache namespace.
+    epochs: int = Field(default=1, ge=1)
     cache_dir: Path = Path(".cache/requests")
     output_dir: Path = Path("runs")
 

@@ -15,6 +15,7 @@ def cache_key(
     messages: list[Message],
     config: GenerateConfig,
     tools: list[dict[str, Any]] | None = None,
+    namespace: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "model": model_spec,
@@ -23,6 +24,9 @@ def cache_key(
     }
     if tools:
         payload["tools"] = tools
+    # Left out when unset so keys written before namespaces existed stay valid.
+    if namespace is not None:
+        payload["namespace"] = namespace
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha256(blob).hexdigest()
 

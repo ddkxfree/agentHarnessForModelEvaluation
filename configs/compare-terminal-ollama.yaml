@@ -24,4 +24,6 @@ generate:
 # One sample at a time: the local server answers one request at a time, so parallel samples
 # would mostly add queueing to the measured wall time.
 concurrency: 1
-cache_policy: never
+# Repeat k is epoch k with its own cache namespace, so repeats are sampled separately while
+# `harness compare --resume <dir>` replays what an interrupted comparison already generated.
+cache_policy: always

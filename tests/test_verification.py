@@ -59,6 +59,7 @@ def test_sampled_outputs_are_not_reused_by_default(tmp_path, temperature, calls_
         "enabled": True,
         "policy": "auto",
         "used": temperature == 0.0,
+        "namespace": None,
     }
 
 
