@@ -227,11 +227,17 @@ def select(samples, limit, seed) -> list[Sample]
 
 ```python
 class Generate(Protocol):
-    async def __call__(self, messages: list[Message], tools: list[dict] | None = None) -> ModelOutput: ...
+    async def __call__(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> ModelOutput: ...
+
 
 class Solver(Protocol):
     name: str
-    async def __call__(self, sample: Sample, generate: Generate, sandbox: Sandbox | None = None) -> SolveResult: ...
+
+    async def __call__(
+        self, sample: Sample, generate: Generate, sandbox: Sandbox | None = None
+    ) -> SolveResult: ...
     def describe(self) -> dict[str, Any]: ...
 ```
 
@@ -240,14 +246,17 @@ class Solver(Protocol):
 ### 4.4 Scorer（`core/scorer.py`）
 
 ```python
-class Scorer(Protocol):          # 只依赖原始输出，可离线重打分
+class Scorer(Protocol):  # 只依赖原始输出，可离线重打分
     name: str
+
     def __call__(self, sample: Sample, text: str) -> Score: ...
     def describe(self) -> dict[str, Any]: ...
 
-class SandboxScorer(Protocol):   # 在沙箱里判分，不能离线重打分
+
+class SandboxScorer(Protocol):  # 在沙箱里判分，不能离线重打分
     name: str
     requires_sandbox: bool
+
     async def __call__(self, sample: Sample, text: str, sandbox: Sandbox) -> Score: ...
     def describe(self) -> dict[str, Any]: ...
 ```
