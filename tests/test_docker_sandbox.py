@@ -142,6 +142,41 @@ def test_time_limit_stops_a_hung_agent_and_removes_its_container(solver):
     assert r.sandbox["container_id"] not in {c.id for c in left}
 
 
+def _terminal_bench_ready() -> bool:
+    """Task files are cached or GitHub is reachable."""
+    from harness.tasks import terminal_bench as tb
+
+    try:
+        for name in tb.PINS:
+            tb.ensure_task(name)
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _terminal_bench_ready(), reason="Terminal-Bench files not available")
+@pytest.mark.parametrize(("solver", "outcome"), [("oracle", Outcome.CORRECT), ("agent", None)])
+def test_terminal_bench_oracle_passes_and_doing_nothing_fails(solver, outcome):
+    from fakes import scripted
+
+    from harness.sandbox.docker import DockerProvider
+
+    task = get_task("terminal-bench", solver=solver)
+    model = scripted("I am done.") if solver == "agent" else get_model("none/none")
+    results = asyncio.run(
+        run_samples(task, task.load(), model, GenerateConfig(), sandbox_provider=DockerProvider())
+    )
+    assert len(results) == 5
+    for r in results:
+        detail = (r.sample.id, r.error, r.score)
+        if outcome is not None:
+            assert r.outcome == outcome, detail
+        else:
+            assert r.outcome == Outcome.WRONG and r.score.extracted == "reward=0", detail
+        assert r.sandbox["image_digests"] and r.sandbox["image_id"].startswith("sha256:")
+        assert any(a.name == "test-stdout.txt" for a in r.artifacts)
+
+
 SWEBENCH_ID = "pytest-dev__pytest-5227"
 SWEBENCH_IMAGE = "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-5227:latest"
 
