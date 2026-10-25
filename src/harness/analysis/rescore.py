@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from harness.analysis.stats import summarize
 from harness.core.io import read_json, read_results, write_json, write_results
 from harness.core.judge import JudgeError, requires_judges
-from harness.core.manifest import now
+from harness.core.manifest import now, task_entry
 from harness.core.scorer import check_score, grades_in_fresh_sandbox, requires_sandbox
-from harness.core.task import get_task
+from harness.core.task import Task, get_task
 from harness.core.types import ErrorKind, SampleResult, Score, classify
 from harness.judge.common import NeedsNewJudgement
 
@@ -80,22 +81,52 @@ def rescore_sample(r: SampleResult, scorer: Any, *, at: str, from_fingerprint: s
     return apply_rescore(r, new, at=at, from_fingerprint=from_fingerprint)
 
 
-def rescore_run(run_dir: Path) -> dict[str, Any]:
+def _task_with(entry: dict[str, Any], overrides: dict[str, Any]) -> tuple[Task, dict[str, Any]]:
+    """The task rebuilt with ``overrides`` applied to its saved params. Overrides may only change
+    how outputs are scored: everything else in the task entry (solver, dataset, samples, limits)
+    must stay as it was run."""
+    params = {**entry["params"], **overrides}
+    task = get_task(entry["name"], **params)
+    if overrides:
+        rebuilt = json.loads(json.dumps(task_entry(task, task.load()), default=str))
+        differ = sorted(
+            k for k in rebuilt if k not in ("params", "scorer") and rebuilt[k] != entry.get(k)
+        )
+        if differ:
+            raise ValueError(
+                f"{entry['name']}: {sorted(overrides)} change {differ}, not just scoring; run again"
+            )
+    return task, params
+
+
+def rescore_run(run_dir: Path, params: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Re-apply each task's current scorer to the saved raw outputs, without calling the model.
 
-    Use this after changing extraction or scoring logic.
+    Use this after changing extraction or scoring logic. ``params`` overrides saved task params
+    that only affect scoring (e.g. a judge's disagreement threshold); the new params are saved
+    in the manifest and the change in its rescore history.
     """
     run_dir = Path(run_dir)
     manifest_path = run_dir / "manifest.json"
     manifest = read_json(manifest_path)
     changes: dict[str, Any] = {}
+    params = params or {}
+    if unknown := sorted(set(params) - {e["name"] for e in manifest["tasks"]}):
+        raise ValueError(f"no such tasks in this run: {unknown}")
 
+    # Every override is checked before any file is rewritten.
+    tasks = {
+        e["name"]: _task_with(e, params.get(e["name"], {}))
+        for e in manifest["tasks"]
+        if (run_dir / e["name"] / "samples.jsonl").exists()
+    }
     for entry in manifest["tasks"]:
         name = entry["name"]
         samples_path = run_dir / name / "samples.jsonl"
-        if not samples_path.exists():
+        if name not in tasks:
             continue
-        scorer = get_task(name, **entry["params"]).scorer
+        task, new_params = tasks[name]
+        scorer = task.scorer
         if requires_sandbox(scorer):
             reason = "scorer needs the sandbox, which no longer exists"
             if grades_in_fresh_sandbox(scorer):
@@ -126,10 +157,17 @@ def rescore_run(run_dir: Path) -> dict[str, Any]:
 
         entry["scorer"] = scorer.describe()
         new_fp = entry["scorer"]["fingerprint"]
-        if new_fp != old_fp:
-            entry.setdefault("rescore_history", []).append(
-                {"at": at, "from_fingerprint": old_fp, "to_fingerprint": new_fp}
-            )
+        old_params = entry["params"]
+        entry["params"] = new_params
+        if new_fp != old_fp or new_params != old_params:
+            step: dict[str, Any] = {"at": at, "from_fingerprint": old_fp, "to_fingerprint": new_fp}
+            if new_params != old_params:
+                step["params_changed"] = {
+                    k: [old_params.get(k), new_params.get(k)]
+                    for k in sorted(set(old_params) | set(new_params))
+                    if old_params.get(k) != new_params.get(k)
+                }
+            entry.setdefault("rescore_history", []).append(step)
         before_acc = manifest["results"].get(name, {}).get("accuracy")
         manifest["results"][name] = summary
         changes[name] = {

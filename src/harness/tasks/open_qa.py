@@ -69,10 +69,11 @@ def open_qa(
     mode: str = "rubric",
     judges: list[str] | str | None = None,
     judge_max_tokens: int = 1024,
+    disagreement_threshold: float = 0.25,
 ) -> Task:
     specs = judge_specs(judges or [], judge_max_tokens)
     if mode == "rubric":
-        scorer: RubricJudge | PairwiseJudge = RubricJudge(RUBRIC, specs)
+        scorer: RubricJudge | PairwiseJudge = RubricJudge(RUBRIC, specs, disagreement_threshold)
     elif mode == "pairwise":
         scorer = PairwiseJudge(specs)
     else:
@@ -99,5 +100,6 @@ def open_qa(
             "mode": mode,
             "judges": judges,
             "judge_max_tokens": judge_max_tokens,
+            "disagreement_threshold": disagreement_threshold,
         },
     )

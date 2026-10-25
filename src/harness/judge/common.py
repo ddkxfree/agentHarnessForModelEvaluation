@@ -85,6 +85,12 @@ class JudgeScorerBase:
         raise NotImplementedError
 
     def prompt_description(self) -> dict[str, Any]:
+        """The whole prompt and scoring setup, including post-processing (normalization,
+        thresholds, values); part of the scorer fingerprint."""
+        raise NotImplementedError
+
+    def request_description(self) -> dict[str, Any]:
+        """Only what decides the messages sent to the judges."""
         raise NotImplementedError
 
     # --- shared ---------------------------------------------------------------------------
@@ -127,11 +133,12 @@ class JudgeScorerBase:
         return score
 
     def inputs_fingerprint(self) -> str:
-        """Everything that decides what the judges are asked and by whom."""
+        """What the judges are asked and by whom. Parsing, normalization, thresholds and
+        aggregation are left out: changing only those can be applied to saved replies."""
         return fingerprint(
             {
                 "mode": self.mode,
-                "prompt": self.prompt_description(),
+                "request": self.request_description(),
                 "judges": [j.model_dump(mode="json") for j in self.judges],
             }
         )

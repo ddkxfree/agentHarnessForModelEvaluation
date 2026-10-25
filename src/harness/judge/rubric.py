@@ -54,12 +54,22 @@ class RubricJudge(JudgeScorerBase):
     # every judge must give a valid verdict; the score is the mean of their normalized totals
     aggregation = "mean_require_all_v1"
     normalization = "sum_over_max_v1"
-    # spread of normalized totals above which the judges are reported as disagreeing
-    disagreement_threshold = 0.25
 
-    def __init__(self, rubric: Rubric, judges: list[JudgeSpec]) -> None:
+    def __init__(
+        self, rubric: Rubric, judges: list[JudgeSpec], disagreement_threshold: float = 0.25
+    ) -> None:
         super().__init__(judges)
+        if isinstance(disagreement_threshold, bool) or not (
+            isinstance(disagreement_threshold, int | float)
+            and math.isfinite(disagreement_threshold)
+            and 0 <= disagreement_threshold <= 1
+        ):
+            raise ValueError(
+                f"disagreement_threshold must be in [0, 1], got {disagreement_threshold!r}"
+            )
         self.rubric = rubric
+        # spread of normalized totals above which the judges are reported as disagreeing
+        self.disagreement_threshold = float(disagreement_threshold)
         names = [c.name for c in rubric.criteria]
         if len(set(names)) != len(names):
             raise ValueError(f"criterion names must be unique: {names}")
@@ -139,3 +149,7 @@ class RubricJudge(JudgeScorerBase):
             "normalization": self.normalization,
             "disagreement_threshold": self.disagreement_threshold,
         }
+
+    def request_description(self) -> dict[str, Any]:
+        # The rubric reaches the judges only through the system prompt.
+        return {"system": self.system, "user": self.prompt_description()["user"]}

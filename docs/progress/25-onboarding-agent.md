@@ -2,7 +2,7 @@
 
 日期：2026-10-25。按 [阶段八开发指引](../stage8-plan.md) 实现三批交付：规格与独立验证、Agent 循环与归档、端到端演示。只用脚本化的 MockModel 回复测试，验证子进程真实运行；**状态：工作流与 MockModel 验收完成、真实接入待验证**。自建样例只证明流程，不代表已经自动适配了新的公开 Benchmark。
 
-本轮分支从 master 新建，不包含阶段六 J1／J2 补修（[24](24-stage6-review-fixes.md)，单独的 PR）。两个分支都改了进度索引和路线图状态段，后合入的一方需要解决冲突。
+本轮分支从 master 新建时，阶段六 J1／J2 补修（[24](24-stage6-review-fixes.md)，PR #20）还未合入。PR #20 合入后，本分支合并了 master，解决了进度索引与路线图状态段的冲突（两边内容都保留）。下面的测试数是合并后的结果。
 
 ## 组成
 
@@ -144,8 +144,8 @@ passed (validated) in /tmp/onboard-demo2/20261025-140635-world-capitals
 
 另有：文件块解析、配置固定的哈希与样例一致、命令行 `onboard` 与 `onboard-verify`。
 
-- 完整环境（含 extra，本机 Docker 实际运行）：`uv run pytest -q` 339 passed。
-- 只装基础依赖：314 passed、8 skipped。
+- 完整环境（含 extra，本机 Docker 实际运行）：`uv run pytest -q` 358 passed（含 J1／J2 补修的测试）。
+- 只装基础依赖：333 passed、8 skipped。
 - `ruff check`、`ruff format --check` 通过。
 
 ## 已知限制
