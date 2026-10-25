@@ -131,3 +131,10 @@ class PairwiseJudge(JudgeScorerBase):
             "user": "question, answer_a and answer_b, each quoted; both orders per judge",
             "values": VALUES,
         }
+
+    def request_description(self) -> dict[str, Any]:
+        return {
+            "system": self.system,
+            "user": self.prompt_description()["user"],
+            "orders": ORDERS,
+        }
