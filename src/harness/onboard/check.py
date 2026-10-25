@@ -1,12 +1,12 @@
-"""Independent checks of a candidate adapter, run by the validator in a separate process.
+"""Independent checks of a candidate adapter, run by the validator in an executor (a container
+by default).
 
     python -m harness.onboard.check --candidate DIR --data DIR --task NAME --report FILE
-        --allowed-imports JSON < cases.json
+        --allowed-imports JSON --payload FILE
 
-The acceptance cases arrive on stdin, so they are never a file next to the candidate code. The
-data directory is a copy; whether the candidate changed it is checked at the end. This guards
-against mistakes and simple shortcuts, not against code written to attack the checker from
-inside the same process.
+The payload (acceptance cases, expected samples and a nonce) is read and deleted before any
+candidate code runs, so the candidate cannot read the expected answers from disk. The data
+directory is a copy; whether the candidate changed it is checked at the end.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import traceback
@@ -26,14 +27,20 @@ from typing import Any
 IMPORT_ERROR = "import_error"
 DEPENDENCY_ERROR = "dependency_error"
 PROTOCOL_ERROR = "protocol_error"
+FIELD_ERROR = "field_error"
 SCORING_ERROR = "scoring_error"
 PROTECTED_VIOLATION = "protected_violation"
 
-CHECKER_VERSION = "onboard_check_v1"
+CHECKER_VERSION = "onboard_check_v2"
 
 
 def _tail(text: str, limit: int = 1500) -> str:
     return text if len(text) <= limit else "..." + text[-limit:]
+
+
+def _short(text: Any, limit: int = 200) -> str:
+    text = repr(text)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 class Failed(Exception):
@@ -107,7 +114,7 @@ class Checker:
         return TASKS[self.task]
 
     # --- 3. task protocol ------------------------------------------------------------------
-    def protocol(self, factory: Any, case_ids: set[str]) -> Any:
+    def protocol(self, factory: Any) -> tuple[Any, list[Any]]:
         from harness.core.fingerprint import fingerprint_dir
         from harness.core.task import Task
 
@@ -136,50 +143,121 @@ class Checker:
             raise fail("load() returned no samples")
         if len(set(ids)) != len(ids):
             raise fail("sample ids are not unique")
-        if ids != [s.id for s in second]:
-            raise fail("sample ids differ between two load() calls")
+        if [s.model_dump() for s in first] != [s.model_dump() for s in second]:
+            raise fail("two load() calls returned different samples (ids or content)")
         if bad := [i for i in ids if not i.startswith(f"{self.task}/")]:
             raise fail(f"sample ids must start with {self.task + '/'!r}, got e.g. {bad[0]!r}")
-        if missing := sorted(case_ids - set(ids)):
-            raise fail(f"expected sample ids are missing, e.g. {missing[:3]}")
         if getattr(task.scorer, "requires_sandbox", False):
             raise fail("this workflow only accepts scorers that need no sandbox")
         desc = task.scorer.describe()
         if not isinstance(desc, dict) or not desc.get("fingerprint"):
             raise fail("scorer.describe() must return a dict with a 'fingerprint'")
         self.ok("protocol", f"{len(ids)} samples, revision {task.dataset.revision}")
-        return task
+        return task, first
 
-    # --- 4. positive and negative outputs ----------------------------------------------------
-    def score_cases(self, task: Any, cases: list[dict[str, Any]], out_dir: Path) -> None:
+    # --- 4. field meaning, against frozen expected samples ----------------------------------
+    def fields(self, samples: list[Any], expected: list[dict[str, Any]]) -> None:
+        got = {s.id: s for s in samples}
+        want = {e["sample_id"]: e for e in expected}
+        problems = []
+        if missing := sorted(set(want) - set(got)):
+            problems.append(f"missing samples {missing[:3]}")
+        if extra := sorted(set(got) - set(want)):
+            problems.append(f"unexpected samples {extra[:3]}")
+        for sid in sorted(set(want) & set(got)):
+            s, e = got[sid], want[sid]
+            for field in ("input", "target"):
+                value = getattr(s, field)
+                if not isinstance(value, str) or not value.strip():
+                    problems.append(f"{sid}: {field} is empty")
+                elif value.strip() != e[field].strip():
+                    problems.append(
+                        f"{sid}: {field} is {_short(value)}, expected {_short(e[field])}"
+                    )
+        if problems:
+            raise Failed(
+                FIELD_ERROR,
+                "fields",
+                f"{len(problems)} field problems:\n" + "\n".join(problems[:10]),
+            )
+        self.ok("fields", f"{len(want)} samples match the expected input and target")
+
+    def _run(self, task: Any, sample: Any, output: str, out_dir: Path, seen: list) -> Any:
         from dataclasses import replace
 
-        from harness.core.io import read_json, read_results
         from harness.core.model import MockModel
         from harness.core.runner import run_eval
-        from harness.core.types import GenerateConfig, Outcome
+        from harness.core.types import GenerateConfig
+
+        def respond(messages: list[dict[str, Any]]) -> str:
+            seen.append(messages)
+            return output
+
+        single = replace(task, load=lambda: [sample])
+        return asyncio.run(
+            run_eval(
+                MockModel(respond, name="acceptance"),
+                [(single, GenerateConfig())],
+                output_dir=out_dir,
+                retries=0,
+            )
+        )
+
+    # --- 5. what the model is actually shown ------------------------------------------------
+    def prompts(self, task: Any, expected: list[dict[str, Any]], out_dir: Path) -> None:
+        by_id = {s.id: s for s in task.load()}
+        problems = []
+        for e in expected:
+            seen: list[list[dict[str, Any]]] = []
+            try:
+                run_dir = self._run(task, by_id[e["sample_id"]], "", out_dir, seen)
+            except BaseException as exc:
+                detail = f"{type(exc).__name__}: {exc}\n{_tail(traceback.format_exc())}"
+                raise Failed(PROTOCOL_ERROR, "prompts", detail) from None
+            if not seen:
+                from harness.core.io import read_results
+
+                (r,) = read_results(run_dir / self.task / "samples.jsonl")
+                problems.append(
+                    f"{e['sample_id']}: the solver never called the model ({r.error or 'no error'})"
+                )
+                continue
+            messages = seen[0]
+            users = [m.get("content") for m in messages if m.get("role") == "user"]
+            last = users[-1] if users else None
+            if not isinstance(last, str) or last.strip() != e["prompt"].strip():
+                problems.append(
+                    f"{e['sample_id']}: the model is asked {_short(last)}, "
+                    f"expected {_short(e['prompt'])}"
+                )
+            target = e["target"].strip().lower()
+            if target and target not in e["prompt"].lower():
+                shown = " ".join(str(m.get("content", "")) for m in messages).lower()
+                if target in shown:
+                    problems.append(f"{e['sample_id']}: the answer is shown to the model")
+        if problems:
+            raise Failed(
+                FIELD_ERROR,
+                "prompts",
+                f"{len(problems)} prompt problems:\n" + "\n".join(problems[:10]),
+            )
+        self.ok("prompts", f"{len(expected)} prompts match")
+
+    # --- 6. positive and negative outputs ----------------------------------------------------
+    def score_cases(self, task: Any, cases: list[dict[str, Any]], out_dir: Path) -> None:
+        from harness.core.io import read_json, read_results
+        from harness.core.types import Outcome
 
         by_id = {s.id: s for s in task.load()}
         failures = []
         for case in cases:
-            sample = by_id[case["sample_id"]]
-            single = replace(task, load=lambda s=sample: [s])
-            output = case["output"]
             try:
-                run_dir = asyncio.run(
-                    run_eval(
-                        MockModel(lambda _m, o=output: o, name="acceptance"),
-                        [(single, GenerateConfig())],
-                        output_dir=out_dir,
-                        retries=0,
-                    )
-                )
+                run_dir = self._run(task, by_id[case["sample_id"]], case["output"], out_dir, [])
             except BaseException as exc:
                 detail = f"{type(exc).__name__}: {exc}\n{_tail(traceback.format_exc())}"
                 raise Failed(SCORING_ERROR, "cases", detail) from None
             (r,) = read_results(run_dir / self.task / "samples.jsonl")
             manifest = read_json(run_dir / "manifest.json")["tasks"][0]
-            got = r.outcome.value
             if r.outcome == Outcome.CORRECT:
                 verdict = "correct"
             elif r.error_kind is not None:
@@ -189,7 +267,7 @@ class Checker:
             passed = verdict == case["expect"]
             record = {
                 **case,
-                "outcome": got,
+                "outcome": r.outcome.value,
                 "score": r.score.value if r.score else None,
                 "error": r.error,
                 "passed": passed,
@@ -213,7 +291,12 @@ class Checker:
 
 
 def run_checks(
-    candidate: Path, data: Path, task: str, allowed: list[str], cases: list[dict[str, Any]]
+    candidate: Path,
+    data: Path,
+    task: str,
+    allowed: list[str],
+    cases: list[dict[str, Any]],
+    expected: list[dict[str, Any]],
 ) -> dict[str, Any]:
     from harness.core.fingerprint import fingerprint_dir
 
@@ -223,8 +306,10 @@ def run_checks(
     try:
         checker.static()
         factory = checker.load()
-        task_obj = checker.protocol(factory, {c["sample_id"] for c in cases})
+        task_obj, samples = checker.protocol(factory)
+        checker.fields(samples, expected)
         with tempfile.TemporaryDirectory(dir=candidate.parent) as tmp:
+            checker.prompts(task_obj, expected, Path(tmp))
             checker.score_cases(task_obj, cases, Path(tmp))
     except Failed as exc:
         failure = exc
@@ -256,12 +341,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--allowed-imports", required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--payload", type=Path, required=True)
     args = parser.parse_args(argv)
-    payload = json.loads(sys.stdin.read())
+    payload = json.loads(args.payload.read_text())
+    os.remove(args.payload)
     report = run_checks(
-        args.candidate, args.data, args.task, json.loads(args.allowed_imports), payload["cases"]
+        args.candidate,
+        args.data,
+        args.task,
+        json.loads(args.allowed_imports),
+        payload["cases"],
+        payload["expected"],
     )
-    # The validator only trusts a report carrying the nonce it sent on stdin.
+    # The validator only trusts a report carrying the nonce it sent.
     report["nonce"] = payload["nonce"]
     args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False))
     return 0

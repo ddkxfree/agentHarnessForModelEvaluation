@@ -9,7 +9,9 @@ Loop:
    files stop the attempt;
 3. validation by ``validator.validate`` (never the agent's own tests alone);
 4. on failure the diagnosis goes back to the model for another round, until the rounds, model
-   steps, tokens or time run out.
+   steps, tokens or time run out. ``time_limit_s`` is one deadline for the whole attempt: model
+   waits, retries, validation and self tests get only the time left, and nothing that finishes
+   after it counts as passed.
 
 Everything is archived in the attempt directory: spec and source hashes, model identity, prompt
 and reply-format versions, budget, every model call, every round's files and validation, the
@@ -43,6 +45,7 @@ from harness.onboard.validator import (
     SOURCE_CHANGED,
     VALIDATOR_VERSION,
     Executor,
+    make_executor,
     validate,
 )
 from harness.onboard.workspace import CandidateWorkspace, WriteRejected, sha256
@@ -54,6 +57,7 @@ REPLY_FORMAT_VERSION = "onboard_reply_v1"
 GENERATION_FAILED = "generation_failed"
 BUDGET_EXHAUSTED = "budget_exhausted"
 NEEDS_HUMAN = "needs_human"
+CANCELLED = "cancelled"
 
 SYSTEM_PROMPT = """\
 You add a new evaluation task to a Python evaluation harness. You write the adapter that turns
@@ -219,7 +223,8 @@ class OnboardAgent:
         clock: Callable[[], float] = time.monotonic,
         spec_path: Path | None = None,
     ) -> None:
-        self.spec, self.model, self.cache, self.executor = spec, model, cache, executor
+        self.spec, self.model, self.cache = spec, model, cache
+        self.executor = executor or make_executor(spec.executor)
         self.retries, self.retry_base_delay, self.clock = retries, retry_base_delay, clock
         self.spec_path = spec_path
 
@@ -239,14 +244,21 @@ class OnboardAgent:
         write_json(self.dir / "conversation.json", self.messages)
 
     # --- budget and model calls --------------------------------------------------------------
+    def _remaining(self) -> float:
+        return self.spec.budget.time_limit_s - (self.clock() - self.started)
+
+    def _out_of_time(self, during: str) -> StopAttempt:
+        limit = self.spec.budget.time_limit_s
+        return StopAttempt("time_limit", BUDGET_EXHAUSTED, f"{limit}s used, during {during}")
+
     def _check_budget(self) -> None:
         b = self.spec.budget
         if len(self.record["steps"]) >= b.max_model_steps:
             raise StopAttempt(
                 "max_model_steps", BUDGET_EXHAUSTED, f"{b.max_model_steps} steps used"
             )
-        if self.clock() - self.started >= b.time_limit_s:
-            raise StopAttempt("time_limit", BUDGET_EXHAUSTED, f"{b.time_limit_s}s used")
+        if self._remaining() <= 0:
+            raise self._out_of_time("the previous step")
         used = self.usage.input_tokens + self.usage.output_tokens
         if b.token_limit is not None and used >= b.token_limit:
             raise StopAttempt("token_limit", BUDGET_EXHAUSTED, f"{used} of {b.token_limit} tokens")
@@ -277,17 +289,23 @@ class OnboardAgent:
                 step["attempts"] += 1
 
             try:
-                out = await retry_async(
-                    lambda: asyncio.wait_for(self.model.generate(messages, gen), gen.timeout),
-                    retries=self.retries,
-                    is_retryable=lambda e: (
-                        isinstance(e, TimeoutError) or self.model.is_retryable(e)
-                    ),
-                    base_delay=self.retry_base_delay,
-                    on_attempt=count,
-                )
+                # the attempt's deadline bounds every wait, retries and backoff included
+                async with asyncio.timeout(self._remaining()) as deadline:
+                    out = await retry_async(
+                        lambda: asyncio.wait_for(self.model.generate(messages, gen), gen.timeout),
+                        retries=self.retries,
+                        is_retryable=lambda e: (
+                            isinstance(e, TimeoutError) or self.model.is_retryable(e)
+                        ),
+                        base_delay=self.retry_base_delay,
+                        on_attempt=count,
+                    )
             except Exception as exc:
                 step["error"] = f"{type(exc).__name__}: {exc}"
+                step["latency_s"] = time.perf_counter() - started
+                self._save()
+                if deadline.expired():
+                    raise self._out_of_time(f"model step {step['n']}") from None
                 raise StopAttempt("model_call_failed", GENERATION_FAILED, step["error"]) from None
             if self.cache is not None:
                 self.cache.put(key, out)
@@ -371,10 +389,13 @@ class OnboardAgent:
                 request = f"{problem} Reply with the complete files as described."
                 self._save()
                 continue
-            report = validate(self.spec, self.workspace.root, self.executor)
+            report = await self._validate()
             rnd["validation"] = report
             rnd["category"] = report["category"]
             self._save()
+            if self._remaining() <= 0:
+                # a result that arrives after the deadline does not count, passed or not
+                raise self._out_of_time(f"validation of round {n}")
             if report["passed"]:
                 return
             if report["category"] in (ENV_ERROR, SOURCE_CHANGED):
@@ -394,6 +415,20 @@ class OnboardAgent:
             BUDGET_EXHAUSTED,
             f"{self.spec.budget.max_rounds} rounds used; last round: {last}",
         )
+
+    async def _validate(self) -> dict[str, Any]:
+        """Independent validation in a worker thread, within the time left; cancelling it
+        kills the check processes or containers."""
+        remaining = self._remaining()
+        if remaining <= 0:
+            raise self._out_of_time("writing")
+        try:
+            return await asyncio.to_thread(
+                validate, self.spec, self.workspace.root, self.executor, timeout=remaining
+            )
+        except asyncio.CancelledError:
+            self.executor.cancel()
+            raise
 
     def identity(self) -> dict[str, Any]:
         return {
@@ -448,6 +483,9 @@ class OnboardAgent:
             await self._rounds()
         except StopAttempt as exc:
             stop = exc
+        except asyncio.CancelledError:
+            self._finish(StopAttempt(CANCELLED, CANCELLED, "the attempt was cancelled"))
+            raise
         self._finish(stop)
         return self.dir
 

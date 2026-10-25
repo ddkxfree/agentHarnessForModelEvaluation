@@ -21,6 +21,10 @@ platform's format and is not a benchmark.
 
 Ask: `What is the capital of <country>? Answer with the city name only.`
 
+Each sample's input is that question, exactly as written, and it is the prompt the model is
+shown, with no other text. The target is `capital`; `alt_names` are further accepted answers,
+not targets. The model must never be shown the answer.
+
 Sample ids must be `world-capitals/<qid>`, so results can be matched across versions.
 
 Scoring follows `SCORING.md`.

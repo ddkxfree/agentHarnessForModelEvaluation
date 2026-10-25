@@ -1,0 +1,6 @@
+{"sample_id": "world-capitals/q1", "input": "What is the capital of France? Answer with the city name only.", "target": "Paris", "prompt": "What is the capital of France? Answer with the city name only."}
+{"sample_id": "world-capitals/q2", "input": "What is the capital of Japan? Answer with the city name only.", "target": "Tokyo", "prompt": "What is the capital of Japan? Answer with the city name only."}
+{"sample_id": "world-capitals/q3", "input": "What is the capital of Brazil? Answer with the city name only.", "target": "Brasília", "prompt": "What is the capital of Brazil? Answer with the city name only."}
+{"sample_id": "world-capitals/q4", "input": "What is the capital of Côte d'Ivoire? Answer with the city name only.", "target": "Yamoussoukro", "prompt": "What is the capital of Côte d'Ivoire? Answer with the city name only."}
+{"sample_id": "world-capitals/q5", "input": "What is the capital of Bolivia? Answer with the city name only.", "target": "Sucre", "prompt": "What is the capital of Bolivia? Answer with the city name only."}
+{"sample_id": "world-capitals/q6", "input": "What is the capital of Australia? Answer with the city name only.", "target": "Canberra", "prompt": "What is the capital of Australia? Answer with the city name only."}

@@ -38,13 +38,14 @@ class CandidateWorkspace:
             self.spec.description,
             self.spec.scoring_rules,
             self.spec.acceptance,
+            self.spec.expected,
             self.spec.data,
         }
         if p.is_absolute() or ".." in p.parts or "\\" in path:
             raise WriteRejected(path, "outside the candidate workspace")
         if p.parts and (p.parts[0] in protected or p.name in protected):
             raise WriteRejected(
-                path, "protected input (source description, data, rules or acceptance)"
+                path, "protected input (source description, data, rules or expectations)"
             )
         if str(p) not in CANDIDATE_FILES:
             raise WriteRejected(path, f"not a candidate file; allowed: {sorted(CANDIDATE_FILES)}")

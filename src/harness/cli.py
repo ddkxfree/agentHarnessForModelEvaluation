@@ -522,6 +522,10 @@ def onboard(
     no_cache: Annotated[bool, typer.Option("--no-cache")] = False,
     cache_dir: Annotated[Path, typer.Option()] = Path(".cache/requests"),
     output_dir: Annotated[Path | None, typer.Option()] = None,
+    executor: Annotated[
+        str | None,
+        typer.Option(help="docker (default) or subprocess (no isolation; trusted code only)"),
+    ] = None,
 ) -> None:
     """Let a model write a Task adapter for a frozen source, validated independently.
 
@@ -532,7 +536,7 @@ def onboard(
     from harness.onboard.agent import OnboardAgent
     from harness.onboard.spec import load_spec
 
-    spec = load_spec(config, model=model, output_dir=output_dir)
+    spec = load_spec(config, model=model, output_dir=output_dir, executor=executor)
     if spec.model is None:
         raise typer.BadParameter("pass --model or set 'model' in the spec")
     agent = OnboardAgent(
@@ -567,11 +571,17 @@ def _print_attempt(record: dict[str, Any], attempt: Path) -> None:
 
 
 @app.command("onboard-verify")
-def onboard_verify(attempt: Path) -> None:
+def onboard_verify(
+    attempt: Path,
+    executor: Annotated[
+        str | None, typer.Option(help="override the attempt's executor: docker or subprocess")
+    ] = None,
+) -> None:
     """Validate a saved onboarding attempt's candidate again, without calling a model."""
     from harness.onboard.agent import verify_attempt
+    from harness.onboard.validator import make_executor
 
-    report = verify_attempt(attempt)
+    report = verify_attempt(attempt, make_executor(executor) if executor else None)
     status, color = ("passed", "green") if report["passed"] else ("failed", "red")
     console.print(f"[bold {color}]{status}[/] {report.get('category') or ''}")
     if report.get("detail"):

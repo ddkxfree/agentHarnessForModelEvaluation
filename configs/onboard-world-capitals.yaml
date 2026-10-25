@@ -5,7 +5,9 @@
 #   harness onboard-verify runs/onboard/<attempt>
 task: world-capitals
 source: examples/onboard/world-capitals
-source_sha256: fc6944c1b079ee0b
+source_sha256: be9339c0742eaa0e
+# candidate code is validated in a container (needs Docker); "subprocess" has no isolation
+executor: docker
 generate:
   temperature: 0.0
   max_tokens: 4096

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -43,6 +43,12 @@ class OnboardSpec(BaseModel):
     # Independent positive/negative outputs. Only the validator reads them; the agent never
     # sees or writes them.
     acceptance: str = "acceptance.jsonl"
+    # Frozen expected samples (sample_id, input, target and the prompt the model must see),
+    # written by a person from the description. Only the validator reads them.
+    expected: str = "expected.jsonl"
+    # Where candidate code runs during validation. "subprocess" has no filesystem isolation
+    # and is only for trusted, scripted candidates.
+    executor: Literal["docker", "subprocess"] = "docker"
     # Top-level modules the adapter may import.
     allowed_imports: list[str] = Field(
         default_factory=lambda: [
@@ -80,10 +86,10 @@ class OnboardSpec(BaseModel):
         return self.source / name
 
     def protected(self) -> list[Path]:
-        """The inputs the agent must not change: description, data, rules and acceptance."""
-        return [self.path(n) for n in (self.description, self.data, self.scoring_rules)] + [
-            self.path(self.acceptance)
-        ]
+        """The inputs the agent must not change: description, data, rules, acceptance cases and
+        expected samples."""
+        names = (self.description, self.data, self.scoring_rules, self.acceptance, self.expected)
+        return [self.path(n) for n in names]
 
     def identity(self) -> dict[str, Any]:
         """What decides an attempt, apart from the model's replies."""
