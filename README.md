@@ -1,14 +1,20 @@
 # agentHarnessForModelEvaluation
 
-这是一个接入主流模型评测的 agent，进行大模型评测的平台。
+一个用 Python 实现的大模型与 Agent 评测 Harness：接入题目、驱动模型或 Agent、隔离执行、评分，并保存可复核的轨迹和结果。平台是“考试中心”，模型与 Agent 是被评对象。
 
-目前已完成：
+目前具备的实现（验收状态见下文）：
 
 - **平台内核**：用 GSM8K 和 MMLU 跑通"加载数据 → 构造 prompt → 调模型 → 抽取答案 → 打分 → 统计 → 归档"的完整链路，具备并发、重试、缓存续跑、可复现记录、离线重打分和运行对比能力。
 - **Agent 评测**：每道题一个 Docker 容器，Agent 通过工具调用在容器里执行命令，结束后由测试脚本检查容器状态来判分；完整记录 Agent 每一步的轨迹。
 - **SWE-bench 与 mini-swe-agent**：接入 SWE-bench Lite（官方镜像和判分逻辑，补丁在全新容器中判分，可用 `harness verify` 独立复核）；mini-swe-agent 作为可替换的 Solver 插件，和基线 Agent 在同一批题上对比。
+- **真实 Terminal-Bench**：固定版本的 5 道 Terminal-Bench 2.0 任务，复用 Harbor 任务格式和验证脚本，镜像固定 digest。
+- **重复实验与消融**：epochs、条件独立缓存、恢复、配对统计、失败报告，以及 token 预算和机制／预算实验分类。
+- **模型裁判**：rubric 与 A/B 双序比较、多裁判分歧记录、裁判调用独立归档、离线重解析和人工标签一致率入口。
+- **自动接入工作流**：Agent 规划、生成候选 adapter、独立检查、接收诊断并修复，导出待人工评审的 diff。
 
-**想在自己电脑上跑起来，看 [上手练习指南](docs/hands-on.md)。** 每一轮工作的详细记录见 [`docs/progress/`](docs/progress/README.md)，后续计划见 [`docs/roadmap.md`](docs/roadmap.md)。
+功能实现、模拟测试和真实实验分别验收。阶段六 J1／J2 补修已通过本轮回归；阶段八发现执行隔离、字段映射验收和总时限问题，仍待补修，见 [本轮评审](docs/progress/27-onboarding-review.md)。真实 TB／SWE Solver 对照、消融、裁判校准和自动接入仍待验证。
+
+阅读入口：[上手练习](docs/hands-on.md)、[进度索引](docs/progress/README.md)、[路线图](docs/roadmap.md)、[后续阶段解释](docs/next-stages.md)、[本地试跑与并行开发](docs/post-ten-plan.md)。上手文档中的旧仓库／分支命令仍需修订；在已有项目目录使用下面的命令。
 
 ## 快速开始
 
@@ -28,6 +34,7 @@ uv run harness run -m dashscope/qwen-plus -t gsm8k -t mmlu --limit 50
 uv run harness run -m none/none -t terminal -p terminal.solver=oracle   # 先用参考答案验证任务本身
 ollama pull qwen2.5:3b-instruct
 uv run harness run -c configs/terminal-ollama.yaml
+uv sync --extra swebench                                            # mini-swe-agent 是可选依赖
 uv run harness run -c configs/terminal-ollama.yaml -p terminal.solver=mini   # 换成 mini-swe-agent
 
 # SWE-bench（需要 Docker 和可选依赖）
@@ -63,9 +70,21 @@ harness rescore runs/<run_id>                        # 改了打分逻辑后，�
 harness verify runs/<run_id>                         # 在新容器里重新判分已保存的补丁（SWE-bench），不调模型
 harness diff runs/<a> runs/<b>                       # 对比两次运行：配置/环境差异 + 逐样本翻转
 harness sandbox-cleanup                              # 清理异常退出后残留的容器
+harness run -c configs/ollama-smoke.yaml --epochs 3 --cache-namespace my-trial
+harness compare -c configs/compare-terminal-ollama.yaml             # 条件对照
+harness compare --resume runs/<compare_dir>                        # 请求级缓存恢复
+harness compare-report runs/<compare_dir>                         # 离线重建对照报告
+harness report runs/<run_id>                                      # 失败样本 Markdown 报告
+harness run -c configs/judge-open-qa.yaml                          # 需要配置被评模型和裁判的 API key
+harness judge-agreement runs/<run_id> --labels labels.jsonl        # 独立标签校准
+harness rescore runs/<run_id> -p open-qa.disagreement_threshold=0.5 # 纯后处理离线重评
+harness onboard -c configs/onboard-world-capitals.yaml -m <provider/model>
+harness onboard-verify runs/onboard/<attempt>                      # 不调用模型，重验候选实现
 ```
 
 `-p task.key=value` 的值按 YAML 解析，例如 `-p mmlu.subjects=[anatomy,virology]`。
+
+`compare --resume` 会重新执行工具与评分，模型请求可从缓存回放。报告区分分数与性能的可比性。Judge 更换 rubric／实际提示词／裁判模型需要新调用，`rescore` 只重解析或重聚合已保存原文。当前 onboarding 默认在宿主子进程执行候选代码，尚未满足隔离验收；具体复现与补修要求见本轮评审。
 
 ## 架构
 
@@ -83,8 +102,10 @@ src/harness/
 │   └── config.py     YAML 运行配置
 ├── sandbox/          Sandbox 抽象和 Docker 实现
 ├── solvers/          basic_agent（bash + submit 工具调用循环）、mini_swe_agent（桥接 mini-swe-agent）、oracle
-├── tasks/            gsm8k.py、mmlu.py、terminal.py、swebench.py，以及 terminal_data/ 下的终端任务
-├── analysis/         stats（bootstrap 置信区间、Agent 统计）、rescore、diff
+├── tasks/            gsm8k、mmlu、terminal、terminal_bench、swebench、open_qa
+├── judge/            rubric、pairwise、解析聚合和校准
+├── onboard/          接入规格、候选工作区、验证器、Agent 反馈修复和 diff
+├── analysis/         stats、compare、rescore、verify、diff、report
 └── cli.py
 ```
 
@@ -92,7 +113,7 @@ src/harness/
 
 - **Task** = 数据集 + `Solver` + `Scorer` + 参数，需要执行环境的任务再加一个沙箱声明。
 - **Solver** 拿到的是 runner 包装好的 `generate` 函数（已带缓存、重试、超时），Agent 循环可以多次调用模型；需要沙箱的任务还会拿到这道题的容器。
-- **Scorer** 分两类：普通 Scorer 只依赖模型原始输出，可以离线重打分；`SandboxScorer` 在容器里判分，例如运行测试脚本。
+- **Scorer**：普通评分器读取原始输出；沙箱评分器检查任务环境；两阶段评分器收集提交物后在新容器验证；Judge 评分器通过独立裁判面板调用模型并归档。
 - 新增评测集只需在 `tasks/` 下写一个文件并用 `@register("name")` 注册，不需要改 `core/`。
 
 ### 终端任务格式
@@ -120,13 +141,14 @@ runs/<run_id>/
 └── ...
 ```
 
-`manifest.json` 记录了复现一次评测需要的全部信息：
+`manifest.json` 和逐样本归档记录了复核评测的主要信息：
 
 - 模型 provider、名称、base_url（不含 API key）
 - 采样参数（temperature、max_tokens、seed 等）
 - 数据集路径、split、**固定的 revision**（本地任务集用内容指纹），以及抽样后样本 id 列表的哈希
 - Solver 指纹（prompt 模板、few-shot 设置，或 Agent 的系统提示、工具、步数上限）和 Scorer 指纹
 - harness 的 git commit、工作区是否有未提交修改、Python 版本、关键依赖版本、`uv.lock` 的哈希
+- 实际沙箱镜像与资源身份、服务端报告的模型标识、epoch 与缓存策略；Judge 任务另记裁判身份、提示词与评分规则
 
 ## 诊断指标
 
@@ -140,9 +162,11 @@ runs/<run_id>/
 | `truncated` | 输出因 `max_tokens` 被截断 |
 | `step_limit` | Agent 用完了步数上限仍未完成 |
 | `time_limit` | Agent 用完了单题总时长（任务参数 `time_limit`）仍未完成；超时后仍会评分 |
+| `token_limit` | Agent 用完服务端报告的逻辑 token 预算后停止；最后一次调用允许超额，停止后仍评分 |
 | `api_error` | 模型调用失败（重试后仍失败），计入分母，避免虚高 |
 | `solver_error` | Solver / Agent 代码本身出错，不是模型的问题 |
 | `scorer_error` | 评分器出错、标准答案无效，或打出了无效分数（NaN、不在 0～1 之间），不是模型的问题 |
+| `judge_error` | 裁判调用失败、回复截断或判断格式无效；原始回答与裁判记录保留 |
 | `env_error` | 沙箱环境故障（镜像构建失败、容器异常等），不是模型的问题 |
 
 所有失败都计入分母，但会归到真正出错的一方，避免把平台或环境的问题算成模型能力不足。
@@ -175,15 +199,20 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-168 个测试。单元测试使用 `MockModel`、内存数据集和内存版假沙箱，不需要网络；`tests/test_docker_sandbox.py` 中的集成测试需要 Docker（SWE-bench 的还需要本地已拉取镜像），没有时自动跳过。集成测试会检查每个终端任务和 SWE-bench 题目都能被 Oracle 解出，且什么都不做的 Agent 一定失败。
+2026-10-25 在 `f3aebaf` 上本机复核为 **323 passed、18 skipped**，静态检查通过；开发方完整环境记录为 358 passed，未在本机独立复核。通过数与跳过数受可选依赖、Docker 和任务资源影响，具体见进度记录。
+
+单元测试用 MockModel、冻结本地数据和假沙箱，不需要网络或密钥；onboarding 测试还运行真实验证子进程。Docker 集成测试需要 daemon、镜像和题目资源，不可用时跳过；可选依赖缺失只跳过相应测试。
 
 ## 路线图
 
-- [x] 阶段 1～4：平台内核（GSM8K、MMLU、并发/重试/缓存、可复现 manifest、诊断统计、rescore、diff）
-- [ ] 阶段 5：Agent 评测和 Docker 沙箱
-  - [x] 沙箱抽象与 Docker 实现、`env_error`、基线 Agent、轨迹记录、3 个自建终端任务、Oracle 校验
-  - [x] 接入 SWE-bench Lite，mini-swe-agent 作为 Solver 插件
-  - [ ] 接入真实的 Terminal-Bench 任务
-- [ ] 阶段 6：LLM-as-Judge（交换位置去偏、多裁判投票）
-- [ ] 阶段 7：多次运行的方差分析、错误自动归类报告
-- [ ] 阶段 8：用 Agent 自动接入新评测集
+| 阶段 | 实现与验收状态 |
+|---|---|
+| 1～4 基础评测平台 | 已实现，已有问答运行记录 |
+| 5 Agent 与沙箱 | 主链路已实现，真实任务上的 Solver 对照待验证 |
+| 6 模型裁判 | 最小实现与 J1／J2 补修通过本轮回归；真实校准待验证 |
+| 7 统计与诊断 | 已实现，真实多 epoch 与中断恢复待验证 |
+| 8 自动接入 | 第一版已实现，本轮评审有三项待补修；真实接入待验证 |
+| 9 真实评测集与 Agent 集成 | 最小集成穿插在阶段 5；完整实验验收待补齐 |
+| 10 Harness 消融 | 预算、协议与对照工具已实现；真实单变量消融待运行 |
+
+阶段编号与 progress 轮次编号不同。下一步优先补齐评审问题，并让本地试运行与有边界的开发并行。
