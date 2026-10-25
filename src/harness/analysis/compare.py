@@ -362,13 +362,37 @@ def experiment_type(spec: CompareSpec, condition: Condition) -> str:
     return "budget_sensitivity" if set(changed) & set(BUDGET_KEYS) else "mechanism_ablation"
 
 
-def _extra_changes(changes: list[list[Any]], changed: list[str]) -> list[str]:
-    """Manifest differences that do not follow from the condition's own parameters. Every
-    condition's task comes from the same factory, so differences inside the task entry are
-    consequences of the changed parameter (derived budgets are checked separately); anything
-    else (model, generation settings, harness version, ...) confounds the comparison."""
+# Task-entry fields that a changed solver or solver parameter is expected to alter: the
+# solver's description (and fingerprint) and protocol, plus the condition's own cache
+# namespace. Budgets may also follow from it; they are checked on their own.
+_DERIVED_TASK_FIELDS = ("solver", "solver_protocol", "cache.namespace", "time_limit", "token_limit")
+
+# Task-entry fields that decide what is scored and how: a change makes scores incomparable.
+SCORING_TASK_FIELDS = ("scorer", "dataset", "n_samples", "sample_ids_sha256")
+
+
+def _task_field(key: str, task_name: str) -> str | None:
+    prefix = f"tasks.{task_name}."
+    return key[len(prefix) :] if key.startswith(prefix) else None
+
+
+def _under(field: str, roots: tuple[str, ...]) -> bool:
+    return any(field == r or field.startswith(f"{r}.") for r in roots)
+
+
+def _extra_changes(changes: list[list[Any]], changed: list[str], task_name: str) -> list[str]:
+    """Manifest differences that do not follow from the condition's own parameters: anything
+    but the changed parameters and the derived solver fields, e.g. the model, its generation
+    settings, the scorer, the dataset revision or the harness version."""
     expected = {f"run_config.params.{k}" for k in changed}
-    return [key for key, _, _ in changes if not key.startswith("tasks.") and key not in expected]
+    expected |= {f"tasks.{task_name}.params.{k}" for k in changed}
+    extra = []
+    for key, _, _ in changes:
+        field = _task_field(key, task_name)
+        if key in expected or (field is not None and _under(field, _DERIVED_TASK_FIELDS)):
+            continue
+        extra.append(key)
+    return extra
 
 
 def interpret(
@@ -552,7 +576,16 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
     recorded = [c["budgets"] for c in conditions.values() if c["budgets"] is not None]
     equal_budget = len(recorded) == len(conditions) and all(b == recorded[0] for b in recorded)
 
-    # Shared reasons first, then per condition: what the records rule out.
+    scoring_changes = sorted(
+        key
+        for changes in condition_changes.values()
+        for key, _, _ in changes
+        if (field := _task_field(key, task_name)) is not None and _under(field, SCORING_TASK_FIELDS)
+    )
+    scores_comparable = scores_comparable and not scoring_changes
+
+    # What the records rule out: reasons that apply to every condition, then each condition's
+    # own. A condition's interpretation includes both, so it never reads better than the whole.
     reasons = []
     if not complete:
         reasons.append("some runs are missing or did not complete")
@@ -562,6 +595,9 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
         reasons.append("repeats of a condition were configured differently")
     if drift:
         reasons.append("the sandbox environment differed between runs")
+    if scoring_changes:
+        reasons.append(f"what is scored or how differs between conditions: {scoring_changes}")
+    shared = list(reasons)
     base_budget = conditions[baseline]["budgets"]
     for c in spec.conditions[1:]:
         entry = conditions[c.label]
@@ -571,11 +607,11 @@ def build_report(compare_dir: Path) -> dict[str, Any]:
             changed,
             entry["budgets"],
             base_budget,
-            _extra_changes(condition_changes.get(c.label, []), changed),
+            _extra_changes(condition_changes.get(c.label, []), changed, task_name),
         )
         entry["interpretation"] = {
-            "supported": "inconclusive" if own else entry["experiment_type"],
-            "reasons": own,
+            "supported": "inconclusive" if shared or own else entry["experiment_type"],
+            "reasons": shared + own,
         }
         reasons += [f"{c.label}: {r}" for r in own]
     supported = "inconclusive" if reasons else kind
