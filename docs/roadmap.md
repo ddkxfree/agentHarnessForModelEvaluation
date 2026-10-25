@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+2026-10-25 阶段六复评基准为 master `881036b`（PR #19）。主体链路和现有 Judge 测试通过，本机 272 passed、18 skipped，静态检查通过；纯后处理变更被误判需新裁判调用、校准输入校验两项待补修，见 [22](progress/22-stage6-review.md)。真实裁判校准仍未验证。下列较早的提交与测试数字为历史记录。
+
 理解后续阶段可先读 [后续阶段说明](next-stages.md)。阶段十历史评审见 [17](progress/17-stage10-review.md)。当前已更新到 master `21e9665`，阶段十源码和补修均已合入；本次 225 passed、18 skipped，静态检查通过。T1 并发预算与 T3 可选依赖测试通过复核；T2 尚漏跨条件的任务内额外差异，见 [19](progress/19-stage10-fix-review.md)。真实消融仍待运行。T2 补修见 [20](progress/20-stage10-t2-fields.md)，已合入 master（PR #18）。[阶段六最小 Judge](stage6-plan.md) 已实现，见 [21](progress/21-judge-minimal.md)：最小实现已完成、真实校准待验证。
 
 历史复评记录：第 11 轮评审时工作区停在 PR #6，从缓存的 PR #10 分支 `c950fa5` 导出审查了累积源码，本机 179 passed、14 skipped；详见 [11](progress/11-stage5-review-and-next.md)。当前已更新到 `8ebc843`，包含阶段七。阶段七复评本机 198 passed、16 skipped，静态检查通过；消融条件间缓存隔离、恢复后的耗时口径和部分分数一致性仍需补修，见 [14](progress/14-stage7-review.md)。真实 TB／SWE Solver 对照仍待运行。
