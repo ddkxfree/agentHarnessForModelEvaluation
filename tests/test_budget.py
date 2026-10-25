@@ -368,6 +368,60 @@ def test_incomplete_runs_are_not_attributed(tmp_path):
 
     report = rebuild(mechanism_dir(tmp_path), "careful", interrupt)
     assert_inconclusive(report, "some runs are missing or did not complete")
+    # a condition never reads better than the whole comparison
+    careful = report["conditions"]["careful"]["interpretation"]
+    assert careful["supported"] == "inconclusive"
+    assert careful["reasons"] == ["some runs are missing or did not complete"]
+
+
+@pytest.mark.parametrize(
+    "path, value, scoring",
+    [
+        (("generate_config", "temperature"), 0.7, False),
+        (("scorer", "fingerprint"), "0000000000000000", True),
+        (("dataset", "revision"), "other-revision", True),
+        (("sample_ids_sha256",), "0" * 16, True),
+    ],
+)
+def test_changes_inside_the_task_entry_are_not_attributed(tmp_path, path, value, scoring):
+    def edit(manifest):
+        target = manifest["tasks"][0]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    report = rebuild(mechanism_dir(tmp_path), "careful", edit)
+    key = "tasks.toy." + ".".join(path)
+    assert_inconclusive(report, f"careful: also differs from the baseline in {key}")
+    assert report["scores_comparable"] is not scoring
+    if scoring:
+        assert_inconclusive(report, "what is scored or how differs between conditions")
+
+
+def test_observation_ablation_of_the_agent_stays_attributable(tmp_path):
+    """The fields BasicAgent's max_observation_chars legitimately changes (task parameter,
+    solver description and fingerprint, protocol, cache namespace) are not extra changes."""
+    spec = CompareSpec(
+        kind="ablation",
+        model="mock/mock",
+        task="terminal",
+        params={"solver": "agent", "ids": ["hello-file"], "token_limit": 10000},
+        conditions=[
+            {"label": "obs4000"},
+            {"label": "obs500", "params": {"max_observation_chars": 500}},
+        ],
+        repeats=1,
+        cache_dir=tmp_path / "cache",
+        output_dir=tmp_path / "runs",
+    )
+    model = scripted(tool_turn(call("submit", "{}")))
+    compare_dir = asyncio.run(run_comparison(spec, model, sandbox_provider=FakeProvider()))
+    report = build_report(compare_dir)
+    changed = {k for k, _, _ in report["config_changes_vs_baseline"]["obs500"]}
+    assert "tasks.terminal.solver.max_observation_chars" in changed
+    assert "tasks.terminal.solver_protocol.observation" in changed
+    assert report["interpretation"] == {"supported": "mechanism_ablation", "reasons": []}
+    assert report["scores_comparable"]
 
 
 def test_mixed_ablations_are_flagged(tmp_path):

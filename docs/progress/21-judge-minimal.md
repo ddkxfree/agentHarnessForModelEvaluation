@@ -2,7 +2,7 @@
 
 日期：2026-10-24。按 [阶段六计划](../stage6-plan.md) 实现。只用 MockModel 裁判测试，没有调用真实模型；**状态：最小实现已完成、真实校准待验证**。
 
-T2 补修（[20](20-stage10-t2-fields.md)）在单独的 PR 中，本轮分支从 master 新建，不包含它。两个分支都改了 `docs/progress/README.md` 和路线图状态段，后合入的一方需要解决这两处冲突。
+本轮分支从 master 新建时，T2 补修（[20](20-stage10-t2-fields.md)，PR #18）还未合入。PR #18 合入后，本分支合并了 master，解决了 `docs/progress/README.md` 与路线图状态段的冲突（两边内容都保留）。下面的测试数是合并后的结果。
 
 ## 做了什么
 
@@ -128,8 +128,8 @@ harness judge-agreement runs/<run> --labels <独立人工标签>.jsonl
   - 命令行 `show` 与 `judge-agreement`；
   - 未传入裁判模型时按 spec 构造（`none/none` 裁判调用失败，记为 `judge_error`，保留错误原文）；
   - 任务参数检查，rubric 标准名唯一。
-- 完整环境（含 extra，本机 Docker 实际运行）：`uv run pytest -q` 302 passed。
-- 只装基础依赖：277 passed、8 skipped。
+- 完整环境（含 extra，本机 Docker 实际运行）：`uv run pytest -q` 307 passed（含 T2 补修的测试）。
+- 只装基础依赖：282 passed、8 skipped。
 - `ruff check`、`ruff format --check` 通过。
 
 ## 已知限制
