@@ -42,7 +42,8 @@
 - 阶段 7 最小版（重复实验、恢复、配对统计、失败报告）已实现，MockModel 测试通过，真实多 epoch 运行待验证：见 [13](progress/13-statistics-diagnostics.md)。复评发现 S1～S3，须补修后验收：见 [14](progress/14-stage7-review.md)。S1～S3 已补修，待复评：见 [15](progress/15-stage7-review-fixes.md)。
 - 阶段 10 最小版（token 预算、Solver 协议记录、预算敏感性／机制消融分类）已实现，MockModel 测试通过，待复评；真实单变量消融（观察截断 4000 对 500）配置已备好，尚未运行，待本地或外部 API 验证：见 [16](progress/16-budget-ablation.md)。复评发现 T1～T3（[17](progress/17-stage10-review.md)），已补修，待复评：见 [18](progress/18-stage10-review-fixes.md)。阶段十源码原先只合并进阶段七补修分支（PR #16），随本轮补修一起合入 master。19 复评后 T2 残留（任务条目内额外差异）已补修，待复评：见 [20](progress/20-stage10-t2-fields.md)。
 - 阶段 6 最小版（rubric 单答案评分、与参考答案的 A/B 双序比较、双裁判聚合并保留分歧、裁判输入／原文／用量／版本完整归档、离线重解析、人工标签一致率入口）已实现，MockModel 测试通过，待复评；**最小实现已完成、真实校准待验证**，配置见 `configs/judge-open-qa.yaml`：见 [21](progress/21-judge-minimal.md)。
-- 307 个测试（只装基础依赖时 282 passed、8 skipped；Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
+- 阶段 8 第一版（接入规格与源包哈希、隔离候选工作区、独立验证器与结构化报告、Agent 规划／写入／验证／反馈修复循环、预算、完整归档、候选 diff、`harness onboard`／`onboard-verify`）已实现，MockModel 测试通过，待复评；**工作流与 MockModel 验收完成、真实接入待验证**：见 [25](progress/25-onboarding-agent.md)。
+- 339 个测试（只装基础依赖时 314 passed、8 skipped；Docker 集成测试在无 Docker 或无镜像时自动跳过），GitHub Actions CI，master 上已确认触发。
 
 ### 阶段 5 加固计划（先把结果做可信，再扩任务数量）
 
@@ -101,7 +102,7 @@
 
 ### 阶段 8：评测集接入 Agent 化
 
-可直接交给 Opus 的第一版范围、执行循环、独立验证与回归验收见 [阶段八开发指引](stage8-plan.md)。当前为计划，尚未实现；阶段六 J1／J2 补修与真实验证状态继续单列。
+可直接交给 Opus 的第一版范围、执行循环、独立验证与回归验收见 [阶段八开发指引](stage8-plan.md)。第一版已实现（[25](progress/25-onboarding-agent.md)）：冻结样例 `examples/onboard/world-capitals`，规格 `configs/onboard-world-capitals.yaml`；真实模型接入待验证。阶段六 J1／J2 补修见 [24](progress/24-stage6-review-fixes.md)（单独 PR），真实验证状态继续单列。
 
 用一个 Agent 自动接入新评测集：读取数据集说明和样例，按 `tasks/` 的约定生成 Task 文件，用已知模型试跑并与论文或排行榜分数对比，分数对不上时查看失败样本、修改并重跑。
 

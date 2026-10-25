@@ -18,7 +18,10 @@ For real end-to-end checks without API keys, use Ollama:
 ollama pull qwen2.5:0.5b-instruct && uv run harness run -c configs/ollama-smoke.yaml
 ollama pull qwen2.5:3b-instruct && uv run harness run -c configs/terminal-ollama.yaml   # needs Docker
 uv run harness run -m none/none -t terminal -p terminal.solver=oracle                  # validates the tasks
+uv run python examples/onboard/demo.py /tmp/onboard-demo                              # onboarding workflow, scripted replies
 ```
+
+The onboarding example in `examples/onboard/world-capitals/` is pinned by `source_sha256` in `configs/onboard-world-capitals.yaml`; update the pin whenever a file there changes.
 
 ## Conventions
 
