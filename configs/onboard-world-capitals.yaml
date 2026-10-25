@@ -1,0 +1,18 @@
+# Onboarding spec for the frozen example in examples/onboard/world-capitals.
+# The model is given on the command line; real runs are PENDING VALIDATION:
+#   harness onboard -c configs/onboard-world-capitals.yaml -m ollama/qwen2.5:7b-instruct
+#   harness onboard -c configs/onboard-world-capitals.yaml -m deepseek/deepseek-chat
+#   harness onboard-verify runs/onboard/<attempt>
+task: world-capitals
+source: examples/onboard/world-capitals
+source_sha256: fc6944c1b079ee0b
+generate:
+  temperature: 0.0
+  max_tokens: 4096
+  timeout: 300
+budget:
+  max_rounds: 3
+  max_model_steps: 6
+  time_limit_s: 1800
+  token_limit: 200000
+  validation_timeout_s: 120

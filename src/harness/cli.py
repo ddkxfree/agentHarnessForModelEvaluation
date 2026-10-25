@@ -514,6 +514,72 @@ def judge_agreement(
     console.print_json(data={k: v for k, v in report.items() if k != "judges"})
 
 
+@app.command()
+def onboard(
+    config: Annotated[Path, typer.Option("--config", "-c", help="Onboarding spec (YAML)")],
+    model: Annotated[str | None, typer.Option("--model", "-m", help="provider/model")] = None,
+    base_url: Annotated[str | None, typer.Option()] = None,
+    no_cache: Annotated[bool, typer.Option("--no-cache")] = False,
+    cache_dir: Annotated[Path, typer.Option()] = Path(".cache/requests"),
+    output_dir: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Let a model write a Task adapter for a frozen source, validated independently.
+
+    The result is a candidate diff for a person to review; nothing is applied to the repo.
+    """
+    from harness.core.cache import DiskCache
+    from harness.core.model import get_model
+    from harness.onboard.agent import OnboardAgent
+    from harness.onboard.spec import load_spec
+
+    spec = load_spec(config, model=model, output_dir=output_dir)
+    if spec.model is None:
+        raise typer.BadParameter("pass --model or set 'model' in the spec")
+    agent = OnboardAgent(
+        spec,
+        get_model(spec.model, base_url=base_url),
+        cache=None if no_cache else DiskCache(cache_dir),
+        spec_path=config,
+    )
+    attempt = asyncio.run(agent.run())
+    _print_attempt(read_json(attempt / "attempt.json"), attempt)
+
+
+def _print_attempt(record: dict[str, Any], attempt: Path) -> None:
+    color = "green" if record["status"] == "passed" else "red"
+    console.print(
+        f"[bold {color}]{record['status']}[/] ({record['stop_reason']}"
+        f"{', ' + record['category'] if record['category'] else ''}) {attempt}"
+    )
+    if record.get("stop_detail"):
+        console.print(record["stop_detail"], markup=False, highlight=False)
+    for rnd in record["rounds"]:
+        console.print(f"round {rnd['round']}: {rnd.get('category') or 'passed'}")
+    for q in record.get("questions", []):
+        console.print(f"[yellow]question:[/] {q}", highlight=False)
+    usage = record["usage"]
+    console.print(
+        f"{len(record['steps'])} model steps, {usage['input_tokens']}+{usage['output_tokens']}"
+        " tokens"
+    )
+    if record.get("diff"):
+        console.print(f"candidate diff for review: {attempt / record['diff']}")
+
+
+@app.command("onboard-verify")
+def onboard_verify(attempt: Path) -> None:
+    """Validate a saved onboarding attempt's candidate again, without calling a model."""
+    from harness.onboard.agent import verify_attempt
+
+    report = verify_attempt(attempt)
+    status, color = ("passed", "green") if report["passed"] else ("failed", "red")
+    console.print(f"[bold {color}]{status}[/] {report.get('category') or ''}")
+    if report.get("detail"):
+        console.print(report["detail"], markup=False, highlight=False)
+    if not report["passed"]:
+        raise typer.Exit(1)
+
+
 @app.command("compare-report")
 def compare_report(compare_dir: Path) -> None:
     """Rebuild a comparison's report from its saved runs, without calling the model."""

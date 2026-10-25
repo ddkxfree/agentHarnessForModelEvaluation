@@ -1,0 +1,11 @@
+{"sample_id": "world-capitals/q1", "output": "Paris", "expect": "correct", "note": "gold answer"}
+{"sample_id": "world-capitals/q2", "output": "  tokyo. ", "expect": "correct", "note": "case, whitespace and trailing period"}
+{"sample_id": "world-capitals/q3", "output": "Brasilia", "expect": "correct", "note": "accent removed"}
+{"sample_id": "world-capitals/q4", "output": "YAMOUSSOUKRO", "expect": "correct", "note": "upper case"}
+{"sample_id": "world-capitals/q5", "output": "La Paz", "expect": "correct", "note": "alternative name"}
+{"sample_id": "world-capitals/q6", "output": "Canberra", "expect": "correct", "note": "gold answer"}
+{"sample_id": "world-capitals/q1", "output": "Lyon", "expect": "wrong", "note": "another city"}
+{"sample_id": "world-capitals/q6", "output": "Sydney", "expect": "wrong", "note": "common mistake"}
+{"sample_id": "world-capitals/q1", "output": "The capital is Paris", "expect": "wrong", "note": "not the city name only"}
+{"sample_id": "world-capitals/q5", "output": "Paris", "expect": "wrong", "note": "gold answer of another question"}
+{"sample_id": "world-capitals/q3", "output": "Brasília Rio", "expect": "wrong", "note": "extra words"}
