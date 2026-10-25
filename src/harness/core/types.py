@@ -119,6 +119,36 @@ class Score(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class JudgeCall(BaseModel):
+    """One call to a judge model, as sent and as answered."""
+
+    judge: str
+    # What the call was for, e.g. "rubric" or "pairwise:candidate_first".
+    purpose: str
+    model: dict[str, Any]
+    messages: list[Message]
+    text: str = ""
+    finish_reason: str | None = None
+    usage: Usage = Field(default_factory=Usage)
+    served_model: str | None = None
+    cached: bool = False
+    latency_s: float = 0.0
+    attempts: int = 0
+    # Set when the call failed after retries; ``text`` is then empty.
+    error: str | None = None
+
+
+class JudgeRecord(BaseModel):
+    calls: list[JudgeCall] = Field(default_factory=list)
+    # Parsed verdicts, one per judge (per order, for pairwise), each with its status.
+    verdicts: list[dict[str, Any]] = Field(default_factory=list)
+    aggregate: dict[str, Any] | None = None
+
+    def usage(self, *, fresh_only: bool = False) -> Usage:
+        calls = [c for c in self.calls if not (fresh_only and c.cached)]
+        return sum((c.usage for c in calls), Usage())
+
+
 class Outcome(StrEnum):
     CORRECT = "correct"
     WRONG = "wrong"
@@ -130,6 +160,7 @@ class Outcome(StrEnum):
     API_ERROR = "api_error"
     SOLVER_ERROR = "solver_error"
     SCORER_ERROR = "scorer_error"
+    JUDGE_ERROR = "judge_error"
     ENV_ERROR = "env_error"
 
 
@@ -139,6 +170,8 @@ class ErrorKind(StrEnum):
     MODEL = "model"  # the model call failed after retries
     SOLVER = "solver"  # the solver or agent code raised
     SCORER = "scorer"  # the scorer raised or produced an invalid score
+    # a judge call failed or its response could not be parsed (see SampleResult.judge)
+    JUDGE = "judge"
     ENV = "env"  # the sandbox or other environment failed
 
 
@@ -146,6 +179,7 @@ ERROR_OUTCOMES = {
     ErrorKind.MODEL: Outcome.API_ERROR,
     ErrorKind.SOLVER: Outcome.SOLVER_ERROR,
     ErrorKind.SCORER: Outcome.SCORER_ERROR,
+    ErrorKind.JUDGE: Outcome.JUDGE_ERROR,
     ErrorKind.ENV: Outcome.ENV_ERROR,
 }
 
@@ -188,6 +222,9 @@ class SampleResult(BaseModel):
     # Seconds from sandbox creation to cleanup, excluding time queued for a concurrency slot.
     wall_time_s: float | None = None
     calls: CallStats = Field(default_factory=CallStats)
+    # Judge calls and verdicts, for scorers that use judge models. Their tokens are not part
+    # of ``usage()`` or ``calls``, which describe the evaluated model only.
+    judge: JudgeRecord | None = None
 
     def usage(self) -> Usage:
         """Tokens spent on the sample, including steps of a solver that failed midway."""

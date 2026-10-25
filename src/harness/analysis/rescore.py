@@ -5,10 +5,17 @@ from typing import Any
 
 from harness.analysis.stats import summarize
 from harness.core.io import read_json, read_results, write_json, write_results
+from harness.core.judge import JudgeError, requires_judges
 from harness.core.manifest import now
 from harness.core.scorer import check_score, grades_in_fresh_sandbox, requires_sandbox
 from harness.core.task import get_task
 from harness.core.types import ErrorKind, SampleResult, Score, classify
+from harness.judge.common import NeedsNewJudgement
+
+NEEDS_NEW_JUDGEMENT = (
+    "the judges' inputs changed (rubric, prompt, judge model or settings); re-parsing the saved "
+    "replies would not judge the new setup, so this needs new judge calls (run again)"
+)
 
 
 def _scoring_state(r: SampleResult) -> dict[str, Any]:
@@ -23,7 +30,7 @@ def _scoring_state(r: SampleResult) -> dict[str, Any]:
 def reached_scoring(r: SampleResult) -> bool:
     """Only these may be rescored: model, solver and environment failures keep their error,
     so a rescore can never turn them into successes."""
-    return r.output is not None and r.error_kind in (None, ErrorKind.SCORER)
+    return r.output is not None and r.error_kind in (None, ErrorKind.SCORER, ErrorKind.JUDGE)
 
 
 def apply_rescore(
@@ -37,7 +44,8 @@ def apply_rescore(
     before = _scoring_state(r)
     if isinstance(new, Exception):
         r.score = None
-        r.error, r.error_kind = f"{type(new).__name__}: {new}", ErrorKind.SCORER
+        kind = ErrorKind.JUDGE if isinstance(new, JudgeError) else ErrorKind.SCORER
+        r.error, r.error_kind = f"{type(new).__name__}: {new}", kind
     else:
         r.score = new
         r.error = r.error_kind = None
@@ -58,7 +66,15 @@ def rescore_sample(r: SampleResult, scorer: Any, *, at: str, from_fingerprint: s
     assert r.output is not None
     new: Score | Exception
     try:
-        new = check_score(scorer(r.sample, r.output.text))
+        if requires_judges(scorer):
+            if r.judge is None:
+                return False
+            # Saved judge replies are parsed and aggregated again; no judge is called.
+            new = check_score(scorer.reparse(r.sample, r.output.text, r.judge))
+        else:
+            new = check_score(scorer(r.sample, r.output.text))
+    except NeedsNewJudgement:
+        raise
     except Exception as exc:
         new = exc
     return apply_rescore(r, new, at=at, from_fingerprint=from_fingerprint)
@@ -86,11 +102,22 @@ def rescore_run(run_dir: Path) -> dict[str, Any]:
                 reason = "grades saved submissions in a fresh sandbox; use `harness verify`"
             changes[name] = {"skipped": reason}
             continue
+        if requires_judges(scorer) and (
+            entry["scorer"].get("inputs_fingerprint") != scorer.inputs_fingerprint()
+        ):
+            changes[name] = {"skipped": NEEDS_NEW_JUDGEMENT}
+            continue
         results = read_results(samples_path)
 
         at = now()
         old_fp = entry["scorer"].get("fingerprint")
-        changed = sum(rescore_sample(r, scorer, at=at, from_fingerprint=old_fp) for r in results)
+        try:
+            changed = sum(
+                rescore_sample(r, scorer, at=at, from_fingerprint=old_fp) for r in results
+            )
+        except NeedsNewJudgement:
+            changes[name] = {"skipped": NEEDS_NEW_JUDGEMENT}
+            continue
         scorer_errors = sum(r.error_kind == ErrorKind.SCORER for r in results)
 
         summary = summarize(results)
@@ -111,6 +138,8 @@ def rescore_run(run_dir: Path) -> dict[str, Any]:
             "samples_changed": changed,
             "scorer_errors": scorer_errors,
         }
+        if requires_judges(scorer):
+            changes[name]["judge_errors"] = sum(r.error_kind == ErrorKind.JUDGE for r in results)
 
     write_json(manifest_path, manifest)
     return changes

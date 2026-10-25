@@ -13,6 +13,7 @@ from typing import Any, Literal
 from harness.analysis.stats import summarize
 from harness.core.cache import DiskCache, cache_key
 from harness.core.io import write_json, write_results
+from harness.core.judge import JudgeError, JudgePanel, JudgeSpec, requires_judges
 from harness.core.manifest import environment_info, now, task_entry
 from harness.core.model import Model, ModelCallError
 from harness.core.retry import retry_async
@@ -27,6 +28,7 @@ from harness.core.trajectory import Trajectory, recording
 from harness.core.types import (
     ErrorKind,
     GenerateConfig,
+    JudgeRecord,
     Message,
     ModelOutput,
     Sample,
@@ -120,14 +122,18 @@ async def run_samples(
     artifact_dir: Path | None = None,
     epoch: int = 1,
     namespace: str | None = None,
+    judges: JudgePanel | None = None,
 ) -> list[SampleResult]:
     """Solve and score every sample. ``artifact_dir`` receives files such as untruncated tool
-    outputs, one subdirectory per sample; without it only their hashes are recorded."""
+    outputs, one subdirectory per sample; without it only their hashes are recorded.
+    ``judges`` is required by scorers that grade with judge models."""
     sem = asyncio.Semaphore(concurrency)
     model_spec = model.spec()
     key_namespace = cache_namespace(namespace, epoch)
     if task.sandbox is not None and sandbox_provider is None:
         raise ValueError(f"task {task.name!r} needs a sandbox provider")
+    if requires_judges(task.scorer) and judges is None:
+        raise ValueError(f"task {task.name!r} needs judge models")
 
     def retryable(exc: BaseException) -> bool:
         return is_timeout(exc) or model.is_retryable(exc)
@@ -194,6 +200,8 @@ async def run_samples(
                 result.error, result.error_kind = str(exc), ErrorKind.MODEL
             elif isinstance(exc, SandboxError):
                 result.error, result.error_kind = _describe(exc), ErrorKind.ENV
+            elif isinstance(exc, JudgeError) and stage == ErrorKind.SCORER:
+                result.error, result.error_kind = _describe(exc), ErrorKind.JUDGE
             else:
                 result.error, result.error_kind = _describe(exc), stage
 
@@ -257,6 +265,12 @@ async def run_samples(
                         score = await task.scorer.grade(sample, submission, grader)
                     elif requires_sandbox(task.scorer):
                         score = await task.scorer(sample, text, sandbox)
+                    elif requires_judges(task.scorer):
+                        assert judges is not None
+                        result.judge = JudgeRecord()
+                        score = await task.scorer.judge(
+                            sample, text, judges, result.judge, key_namespace
+                        )
                     else:
                         score = task.scorer(sample, text)
                     result.score = check_score(score)
@@ -282,6 +296,25 @@ async def run_samples(
     finally:
         if sandbox_provider is not None:
             await sandbox_provider.drain()
+
+
+def judge_panel(
+    specs: list[JudgeSpec],
+    models: dict[str, Model],
+    cache: DiskCache | None,
+    cache_policy: CachePolicy,
+    retries: int,
+) -> JudgePanel:
+    """The judges of a scorer, with the run's cache policy applied to each judge's settings."""
+    from harness.core.model import get_model
+
+    return JudgePanel(
+        [(s, models.get(s.name) or get_model(s.model, base_url=s.base_url)) for s in specs],
+        cache=lambda s: (
+            cache if cache is not None and use_cache(cache_policy, s.generate) else None
+        ),
+        retries=retries,
+    )
 
 
 def _slug(text: str) -> str:
@@ -314,13 +347,15 @@ async def run_eval(
     epochs: int = 1,
     first_epoch: int = 1,
     namespace: str | None = None,
+    judge_models: dict[str, Model] | None = None,
 ) -> Path:
     """Run every task, writing per-sample logs, summaries and a manifest under one run dir.
 
     ``progress`` is an optional ``rich.progress.Progress`` used to display progress.
     ``cache_policy`` decides per task whether ``cache`` is used; see ``use_cache``.
     Every sample is run ``epochs`` times, numbered from ``first_epoch``; each epoch has its own
-    cache namespace (see ``cache_namespace``).
+    cache namespace (see ``cache_namespace``). Judge scorers get their models from
+    ``judge_models`` (by judge name) or, failing that, from ``get_model`` on the judge's spec.
     """
     if epochs < 1:
         raise ValueError("epochs must be at least 1")
@@ -355,6 +390,12 @@ async def run_eval(
             entry["epochs"] = epoch_numbers
             if task.sandbox is not None and sandbox_provider is not None:
                 entry["sandbox_provider"] = sandbox_provider.describe()
+            panel = None
+            if requires_judges(task.scorer):
+                panel = judge_panel(
+                    task.scorer.judges, judge_models or {}, cache, cache_policy, retries
+                )
+                entry["judges"] = panel.describe()
             manifest["tasks"].append(entry)
             write_json(manifest_path, manifest)
 
@@ -387,6 +428,7 @@ async def run_eval(
                         artifact_dir=task_dir / "artifacts",
                         epoch=epoch,
                         namespace=namespace,
+                        judges=panel,
                     )
             summary = summarize(results)
             write_results(samples_path, results)

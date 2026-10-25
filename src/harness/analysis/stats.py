@@ -92,6 +92,42 @@ def epoch_stats(results: list[SampleResult]) -> dict[str, Any] | None:
     }
 
 
+def judge_stats(results: list[SampleResult]) -> dict[str, Any] | None:
+    """Judge calls, tokens and verdicts, counted apart from the evaluated model's."""
+    judged = [r for r in results if r.judge is not None]
+    if not judged:
+        return None
+    calls = [c for r in judged for c in r.judge.calls]  # type: ignore[union-attr]
+    fresh = [c for c in calls if not c.cached and c.error is None]
+    return {
+        "samples": len(judged),
+        "calls": len(calls),
+        "fresh_calls": len(fresh),
+        "cached_calls": sum(c.cached for c in calls),
+        "failed_calls": sum(c.error is not None for c in calls),
+        "tokens": {
+            "input": sum(c.usage.input_tokens for c in calls),
+            "output": sum(c.usage.output_tokens for c in calls),
+        },
+        "fresh_tokens": {
+            "input": sum(c.usage.input_tokens for c in fresh),
+            "output": sum(c.usage.output_tokens for c in fresh),
+        },
+        "verdict_statuses": dict(
+            Counter(
+                v.get("status", "unknown")
+                for r in judged
+                for v in r.judge.verdicts  # type: ignore[union-attr]
+            ).most_common()
+        ),
+        # e.g. pairwise results: candidate, reference, tie, inconsistent, disagreement
+        "labels": dict(Counter(r.score.extracted for r in judged if r.score).most_common()),
+        "served_models": dict(
+            Counter(c.served_model for c in calls if c.served_model).most_common()
+        ),
+    }
+
+
 def summarize(results: list[SampleResult]) -> dict[str, Any]:
     n = len(results)
     # API errors count as failures: dropping them would inflate accuracy
@@ -126,6 +162,7 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
     return {
         "n": n,
         "accuracy": sum(values) / n if n else 0.0,
+        "judge": judge_stats(results),
         "ci95": [lo, hi],
         "outcomes": {o.value: outcomes.get(o.value, 0) for o in Outcome},
         "rates": {o.value: (outcomes.get(o.value, 0) / n if n else 0.0) for o in Outcome},

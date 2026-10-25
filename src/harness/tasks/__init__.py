@@ -1,1 +1,1 @@
-from harness.tasks import gsm8k, mmlu, swebench, terminal, terminal_bench  # noqa: F401
+from harness.tasks import gsm8k, mmlu, open_qa, swebench, terminal, terminal_bench  # noqa: F401

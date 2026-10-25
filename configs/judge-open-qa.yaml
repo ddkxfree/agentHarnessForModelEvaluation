@@ -1,0 +1,20 @@
+# Two-judge rubric grading of open-ended answers. PENDING VALIDATION: not yet run with real
+# models. Needs API keys for the evaluated model and both judges, e.g.
+#   export DASHSCOPE_API_KEY=... DEEPSEEK_API_KEY=...
+#   harness run -c configs/judge-open-qa.yaml
+#   harness run -c configs/judge-open-qa.yaml -p open-qa.mode=pairwise
+#   harness show runs/<run> --sample open-qa/tcp-vs-udp
+#   harness judge-agreement runs/<run> --labels <independent labels.jsonl>
+# Judges should differ from the evaluated model and from each other; the labels must come
+# from people (or another independent source), not from these judges.
+model: dashscope/qwen-plus
+generate:
+  temperature: 0.0
+  max_tokens: 512
+  seed: 0
+concurrency: 4
+tasks:
+  - name: open-qa
+    params:
+      mode: rubric
+      judges: [deepseek/deepseek-chat, dashscope/qwen-max]
