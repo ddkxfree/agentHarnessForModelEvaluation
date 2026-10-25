@@ -251,11 +251,20 @@ def sandbox_cleanup() -> None:
 
 
 @app.command()
-def rescore(run_dir: Path) -> None:
+def rescore(
+    run_dir: Path,
+    param: Annotated[
+        list[str] | None,
+        typer.Option("--param", "-p", help="task.key=value; only params that affect scoring"),
+    ] = None,
+) -> None:
     """Re-score saved outputs with the current scorer code, without calling the model."""
     from harness.analysis.rescore import rescore_run
 
-    changes = rescore_run(run_dir)
+    try:
+        changes = rescore_run(run_dir, _parse_params(param or []))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
     for name, c in changes.items():
         if "skipped" in c:
             console.print(f"{name}: skipped ({c['skipped']})")
@@ -498,7 +507,10 @@ def judge_agreement(
     """Agreement of a run's saved judgements with independent labels; calls no model."""
     from harness.judge.calibration import run_agreement
 
-    report = run_agreement(run_dir, labels, task=task, threshold=threshold)
+    try:
+        report = run_agreement(run_dir, labels, task=task, threshold=threshold)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
     console.print_json(data={k: v for k, v in report.items() if k != "judges"})
 
 

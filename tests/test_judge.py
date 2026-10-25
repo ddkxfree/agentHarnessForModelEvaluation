@@ -395,6 +395,117 @@ def test_rescore_refuses_to_reuse_replies_after_the_rubric_changed(tmp_path, mon
     assert rescore_run(run_dir) == {"open-qa": {"skipped": NEEDS_NEW_JUDGEMENT}}
 
 
+def three_quarters_judge(messages):
+    return rubric_reply(points(3, 2, 1))  # 6/9
+
+
+def no_model_calls(monkeypatch):
+    monkeypatch.setattr(
+        "harness.core.model.get_model", lambda *a, **k: pytest.fail("rescore called a model")
+    )
+
+
+def test_post_processing_is_not_part_of_the_judge_inputs():
+    judges = [JudgeSpec(name="j1", model="openai/x")]
+    base = RubricJudge(open_qa.RUBRIC, judges)
+    looser = RubricJudge(open_qa.RUBRIC, judges, disagreement_threshold=0.5)
+    assert looser.inputs_fingerprint() == base.inputs_fingerprint()
+    assert looser.describe()["fingerprint"] != base.describe()["fingerprint"]
+    # what the judges are shown still counts: the points of a criterion, its text, the judge
+    criteria = list(open_qa.RUBRIC.criteria)
+    criteria[0] = criteria[0].model_copy(update={"max_points": 5})
+    more_points = RubricJudge(open_qa.RUBRIC.model_copy(update={"criteria": criteria}), judges)
+    assert more_points.inputs_fingerprint() != base.inputs_fingerprint()
+    other_judge = RubricJudge(open_qa.RUBRIC, [JudgeSpec(name="j1", model="openai/y")])
+    assert other_judge.inputs_fingerprint() != base.inputs_fingerprint()
+    pairwise = PairwiseJudge(judges)
+    assert PairwiseJudge(judges, criteria="Only correctness.").inputs_fingerprint() != (
+        pairwise.inputs_fingerprint()
+    )
+
+
+@pytest.mark.parametrize("threshold", [-0.1, 1.5, float("nan"), True])
+def test_the_disagreement_threshold_must_be_in_the_unit_interval(threshold):
+    with pytest.raises(ValueError, match="disagreement_threshold"):
+        RubricJudge(open_qa.RUBRIC, [JudgeSpec(name="j1", model="openai/x")], threshold)
+
+
+def test_a_new_disagreement_threshold_is_rescored_offline_and_recorded(tmp_path, monkeypatch):
+    run_dir, results, _ = run(
+        tmp_path, [honest_rubric_judge, three_quarters_judge], ids=["tcp-vs-udp"]
+    )
+    (before,) = results
+    assert before.judge.aggregate["disagreement"] is True  # spread 1/3 > 0.25
+    entry_before = read_json(run_dir / "manifest.json")["tasks"][0]
+
+    no_model_calls(monkeypatch)
+    changes = rescore_run(run_dir, {"open-qa": {"disagreement_threshold": 0.5}})
+    assert changes["open-qa"]["samples_changed"] == 1
+
+    (after,) = read_results(run_dir / "open-qa" / "samples.jsonl")
+    assert after.judge.aggregate["disagreement"] is False
+    assert after.score.value == before.score.value
+    assert [c.text for c in after.judge.calls] == [c.text for c in before.judge.calls]
+    assert after.rescore_history[0]["score"]["details"]["disagreement"] is True
+
+    entry = read_json(run_dir / "manifest.json")["tasks"][0]
+    assert entry["params"]["disagreement_threshold"] == 0.5
+    assert entry["scorer"]["prompt"]["disagreement_threshold"] == 0.5
+    assert entry["scorer"]["inputs_fingerprint"] == entry_before["scorer"]["inputs_fingerprint"]
+    (step,) = entry["rescore_history"]
+    assert step["from_fingerprint"] == entry_before["scorer"]["fingerprint"]
+    assert step["to_fingerprint"] == entry["scorer"]["fingerprint"] != step["from_fingerprint"]
+    assert step["params_changed"] == {"disagreement_threshold": [0.25, 0.5]}
+
+    # a later plain rescore keeps the new threshold
+    assert rescore_run(run_dir)["open-qa"]["samples_changed"] == 0
+
+
+def test_a_versioned_aggregation_change_is_rescored_offline(tmp_path, monkeypatch):
+    from harness.judge import pairwise
+
+    run_dir, results, _ = run(tmp_path, [always_a], mode="pairwise", ids=["tcp-vs-udp"])
+    assert results[0].score.value == 0.5  # inconsistent counts as a tie
+    old = read_json(run_dir / "manifest.json")["tasks"][0]["scorer"]
+
+    monkeypatch.setattr(pairwise, "VALUES", {**pairwise.VALUES, "inconsistent": 0.0})
+    monkeypatch.setattr(PairwiseJudge, "aggregation", "both_orders_mean_require_all_v2")
+    no_model_calls(monkeypatch)
+    assert rescore_run(run_dir)["open-qa"]["samples_changed"] == 1
+
+    (r,) = read_results(run_dir / "open-qa" / "samples.jsonl")
+    assert r.score.value == 0.0 and r.judge.aggregate["rule"].endswith("_v2")
+    new = read_json(run_dir / "manifest.json")["tasks"][0]
+    assert new["scorer"]["inputs_fingerprint"] == old["inputs_fingerprint"]
+    assert new["scorer"]["aggregation"] == "both_orders_mean_require_all_v2"
+    assert new["rescore_history"][0]["from_fingerprint"] == old["fingerprint"]
+
+
+def test_rescore_params_that_change_the_judges_need_new_judgements(tmp_path):
+    run_dir, _, _ = run(tmp_path, [honest_rubric_judge], ids=["tcp-vs-udp"])
+    changes = rescore_run(run_dir, {"open-qa": {"judges": ["openai/other"]}})
+    assert changes == {"open-qa": {"skipped": NEEDS_NEW_JUDGEMENT}}
+    entry = read_json(run_dir / "manifest.json")["tasks"][0]
+    assert entry["params"]["judges"] == ["openai/judge-0"]
+
+
+@pytest.mark.parametrize(
+    "params, error",
+    [
+        ({"open-qa": {"ids": ["git-rebase-merge"]}}, "sample_ids_sha256"),
+        ({"gsm8k": {"limit": 1}}, "no such tasks"),
+    ],
+)
+def test_rescore_params_may_only_change_scoring(tmp_path, params, error):
+    run_dir, _, _ = run(tmp_path, [honest_rubric_judge], ids=["tcp-vs-udp"])
+    samples = (run_dir / "open-qa" / "samples.jsonl").read_text()
+    manifest = (run_dir / "manifest.json").read_text()
+    with pytest.raises(ValueError, match=error):
+        rescore_run(run_dir, params)
+    assert (run_dir / "open-qa" / "samples.jsonl").read_text() == samples
+    assert (run_dir / "manifest.json").read_text() == manifest
+
+
 # --- calibration -------------------------------------------------------------------------
 
 
@@ -429,6 +540,7 @@ def test_pairwise_agreement_reports_unstable_and_invalid_apart(tmp_path):
     assert report["invalid_judgements"] == 1 and report["unstable_judgements"] == 1
     assert report["unstable_by_kind"] == {"inconsistent": 1, "disagreement": 0}
     assert report["compared"] == 2 and report["agreement"] == 0.5
+    assert report["coverage"] == 0.5  # 2 of the 4 labelled samples
     assert report["judges"][0]["name"] == "j1"
 
 
@@ -454,6 +566,53 @@ def test_bad_labels_are_rejected(tmp_path, label):
     labels = write_labels(tmp_path / "l.jsonl", rows)
     with pytest.raises(ValueError):
         run_agreement(run_dir, labels)
+
+
+@pytest.mark.parametrize("threshold", [float("nan"), float("inf"), 2.0, -0.5, True])
+def test_bad_thresholds_are_rejected(tmp_path, threshold):
+    run_dir, _, _ = run(tmp_path, [honest_rubric_judge], ids=["python-mutable-default"])
+    rows = [{"sample_id": "open-qa/python-mutable-default", "label": 1}]
+    labels = write_labels(tmp_path / "l.jsonl", rows)
+    assert run_agreement(run_dir, labels, threshold=0.5)["agreement"] == 0.0  # 1/3 vs 1
+    with pytest.raises(ValueError, match="threshold"):
+        run_agreement(run_dir, labels, threshold=threshold)
+
+
+@pytest.mark.parametrize("mode, bad", [("rubric", 999), ("rubric", "nan"), ("pairwise", "A")])
+def test_labels_are_checked_even_where_nothing_is_compared(tmp_path, mode, bad):
+    def broken(messages):
+        return ModelOutput(text="no verdict")
+
+    run_dir, _, _ = run(tmp_path, [broken], mode=mode, ids=["tcp-vs-udp"])
+    good = 0.5 if mode == "rubric" else "tie"
+    # a judge_error sample and a sample that is not in the run
+    for sample_id in ("open-qa/tcp-vs-udp", "open-qa/unknown"):
+        rows = [{"sample_id": sample_id, "label": bad}]
+        with pytest.raises(ValueError, match="label for"):
+            run_agreement(run_dir, write_labels(tmp_path / "l.jsonl", rows))
+    rows = [
+        {"sample_id": "open-qa/tcp-vs-udp", "label": good},
+        {"sample_id": "open-qa/unknown", "label": good},
+    ]
+    report = run_agreement(run_dir, write_labels(tmp_path / "l.jsonl", rows))
+    assert report["invalid_judgements"] == 1 and report["labels_without_sample"] == 1
+    assert report["compared"] == 0 and report["agreement"] is None and report["coverage"] == 0.0
+
+
+def test_cli_rescore_accepts_scoring_params(tmp_path):
+    from typer.testing import CliRunner
+
+    from harness.cli import app
+
+    run_dir, _, _ = run(tmp_path, [honest_rubric_judge], ids=["tcp-vs-udp"])
+    args = ["rescore", str(run_dir), "-p", "open-qa.disagreement_threshold=0.5"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert (
+        read_json(run_dir / "manifest.json")["tasks"][0]["params"]["disagreement_threshold"] == 0.5
+    )
+    bad = CliRunner().invoke(app, ["rescore", str(run_dir), "-p", "open-qa.ids=[x]"])
+    assert bad.exit_code != 0 and "not just scoring" in bad.output
 
 
 def test_cli_shows_judgements_and_agreement(tmp_path):

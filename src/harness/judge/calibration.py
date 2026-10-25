@@ -38,17 +38,37 @@ def read_labels(path: Path) -> dict[tuple[str, int], Any]:
     return labels
 
 
-def _rubric_label(value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise ValueError(f"rubric labels must be numbers in [0, 1], got {value!r}")
-    if not 0 <= value <= 1:
-        raise ValueError(f"rubric labels must be in [0, 1], got {value!r}")
+def _unit_number(value: Any, what: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or not 0 <= value <= 1
+    ):
+        raise ValueError(f"{what} must be a number in [0, 1], got {value!r}")
     return float(value)
+
+
+def check_labels(labels: dict[tuple[str, int], Any], mode: str) -> None:
+    """Every label, whether or not its sample was judged or exists in the run."""
+    for key, value in labels.items():
+        if mode == "pairwise":
+            if not isinstance(value, str) or value not in PAIRWISE_LABELS:
+                raise ValueError(
+                    f"label for {key}: pairwise labels must be one of {PAIRWISE_LABELS}, "
+                    f"got {value!r}"
+                )
+        elif mode == "rubric":
+            _unit_number(value, f"label for {key}: rubric labels")
+        else:
+            raise ValueError(f"unknown judge mode {mode!r}")
 
 
 def agreement(
     results: list[SampleResult], labels: dict[tuple[str, int], Any], mode: str, threshold: float
 ) -> dict[str, Any]:
+    check_labels(labels, mode)
+    threshold = _unit_number(threshold, "threshold")
     labelled = [r for r in results if (r.sample.id, r.epoch) in labels]
     judged = [r for r in labelled if r.score is not None and r.error_kind is None]
     invalid = [r for r in labelled if r.error_kind == ErrorKind.JUDGE]
@@ -62,9 +82,6 @@ def agreement(
         "other_errors": len(labelled) - len(judged) - len(invalid),
     }
     if mode == "pairwise":
-        for value in labels.values():
-            if value not in PAIRWISE_LABELS:
-                raise ValueError(f"pairwise labels must be one of {PAIRWISE_LABELS}, got {value!r}")
         # judgements that are neither a stable pick nor a stable tie cannot agree with a label
         unstable = [r for r in judged if r.score and r.score.extracted not in PAIRWISE_LABELS]
         stable = [r for r in judged if r not in unstable]
@@ -79,7 +96,7 @@ def agreement(
             "agreement": agree / len(stable) if stable else None,
         }
     elif mode == "rubric":
-        pairs = [(r.score.value, _rubric_label(labels[(r.sample.id, r.epoch)])) for r in judged]  # type: ignore[union-attr]
+        pairs = [(r.score.value, float(labels[(r.sample.id, r.epoch)])) for r in judged]  # type: ignore[union-attr]
         agree = sum((j >= threshold) == (h >= threshold) for j, h in pairs)
         report |= {
             "threshold": threshold,
@@ -89,8 +106,8 @@ def agreement(
             if pairs
             else None,
         }
-    else:
-        raise ValueError(f"unknown judge mode {mode!r}")
+    # share of labelled samples that entered the agreement; the rest are counted above
+    report["coverage"] = report["compared"] / len(labelled) if labelled else None
     return report
 
 
