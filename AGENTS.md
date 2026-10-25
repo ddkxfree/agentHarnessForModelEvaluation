@@ -21,7 +21,7 @@ uv run harness run -m none/none -t terminal -p terminal.solver=oracle           
 uv run python examples/onboard/demo.py /tmp/onboard-demo                              # onboarding workflow, scripted replies
 ```
 
-The onboarding example in `examples/onboard/world-capitals/` is pinned by `source_sha256` in `configs/onboard-world-capitals.yaml`; update the pin whenever a file there changes.
+The onboarding example in `examples/onboard/world-capitals/` is pinned by `source_sha256` in `configs/onboard-world-capitals.yaml`; update the pin whenever a file there changes. Candidate code from a model is validated in a Docker container (`executor: docker`, the default); `executor: subprocess` has no filesystem isolation and is only for trusted, scripted candidates such as the tests and the demo.
 
 ## Conventions
 
