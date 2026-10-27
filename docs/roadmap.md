@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+最新复评（2026-10-27，master `77e71c0`，PR #22）：O1 默认 Docker 隔离已实现，本会话 Docker 不可连接，容器实测仍待复核；O2 字段映射回归通过；O3 慢模型调用及超时误报成功已修，但镜像准备／容器启动仍漏总时限（P2 O3a）。本机 338 passed、23 skipped，静态检查通过；真实模型接入未执行。详见 [29](progress/29-onboarding-fixes-review.md)。下列状态保留为历史记录。
+
 阶段八 O1～O3 补修（2026-10-25，基于 master `258274d`）：候选代码默认在容器中验证，冻结预期样本检查字段与模型实际看到的题目，总时限覆盖整次尝试；378 passed（含 Docker 用例），静态检查通过，待复评。真实模型接入仍待验证。详见 [28](progress/28-onboarding-review-fixes.md)。
 
 最新复评（2026-10-25，master `f3aebaf`）：阶段六 J1／J2 补修的现有回归通过；阶段八工作流已实现，但执行隔离、字段映射独立验收和总时限三项待补修。本机 323 passed、18 skipped，静态检查通过；真实模型验收未执行。详见 [27](progress/27-onboarding-review.md)。此前的提交和测试数字保留为历史记录。
