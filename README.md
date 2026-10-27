@@ -12,7 +12,7 @@
 - **模型裁判**：rubric 与 A/B 双序比较、多裁判分歧记录、裁判调用独立归档、离线重解析和人工标签一致率入口。
 - **自动接入工作流**：Agent 规划、生成候选 adapter、独立检查、接收诊断并修复，导出待人工评审的 diff。
 
-功能实现、模拟测试和真实实验分别验收。阶段六 J1／J2 补修已通过此前回归；阶段八 PR #22 复评：默认容器隔离已实现、Docker 实测待复核，字段映射回归通过；超时误报成功已修，镜像准备／容器启动仍漏总时限。本机 338 passed、23 skipped，详见 [29](docs/progress/29-onboarding-fixes-review.md)。O3a 已补修（镜像准备独立限时、容器启动受剩余时间约束），Docker 隔离回归已在 Docker 上复核，待复评，见 [30](docs/progress/30-onboarding-o3a-fix.md)。真实 TB／SWE Solver 对照、消融、裁判校准和自动接入仍待验证。
+功能实现、模拟测试和真实实验分别验收。阶段六 J1／J2 补修已通过此前回归；阶段八 PR #23 复评：字段映射、镜像准备独立限时、创建／启动的剩余时间回归通过；取消与创建结果交接仍有竞态（P2 O3b）。本机 345 passed、24 skipped，静态检查通过，详见 [31](docs/progress/31-onboarding-o3a-review.md)。Docker 隔离回归的开发方实测见 [30](docs/progress/30-onboarding-o3a-fix.md)，本轮 Docker 用例跳过。真实 TB／SWE Solver 对照、消融、裁判校准和自动接入仍待验证。
 
 阅读入口：[上手练习](docs/hands-on.md)、[进度索引](docs/progress/README.md)、[路线图](docs/roadmap.md)、[后续阶段解释](docs/next-stages.md)、[本地试跑与并行开发](docs/post-ten-plan.md)。上手文档中的旧仓库／分支命令仍需修订；在已有项目目录使用下面的命令。
 

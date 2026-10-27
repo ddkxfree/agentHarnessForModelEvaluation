@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+最新复评（2026-10-27，master `ff27973`，PR #23）：镜像准备独立限时、容器创建／启动与剩余时间扣减的现有回归通过；取消与创建结果交接仍有竞态，已取消后可能启动候选容器（P2 O3b）。本机 345 passed、24 skipped，静态检查通过；本会话 Docker 不可连接、真实模型接入未执行。详见 [31](progress/31-onboarding-o3a-review.md)。下列状态为历史记录。
+
 阶段八 O3a 补修（2026-10-27，基于 master `aa71a50`）：镜像准备独立限时（`prepare_timeout_s`），在尝试计时前完成并记录，超时或取消时 kill 构建；容器创建、启动和等待共用剩余时间。Docker 隔离回归在 Docker 29.1.3 上全部通过；386 passed，静态检查通过，待复评。真实模型接入仍待验证。详见 [30](progress/30-onboarding-o3a-fix.md)。
 
 最新复评（2026-10-27，master `77e71c0`，PR #22）：O1 默认 Docker 隔离已实现，本会话 Docker 不可连接，容器实测仍待复核；O2 字段映射回归通过；O3 慢模型调用及超时误报成功已修，但镜像准备／容器启动仍漏总时限（P2 O3a）。本机 338 passed、23 skipped，静态检查通过；真实模型接入未执行。详见 [29](progress/29-onboarding-fixes-review.md)。下列状态保留为历史记录。
