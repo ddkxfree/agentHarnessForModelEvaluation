@@ -740,3 +740,180 @@ def test_docker_kills_and_removes_containers_on_timeout_and_cancel(tmp_path):
     assert report["category"] == "validation_crashed"  # killed, so no report was written
     leftover = docker.from_env().containers.list(all=True, filters={"label": "harness.onboard"})
     assert leftover == []
+
+
+# --- 10. executor preparation and container start stay within their time ----------------------
+
+
+class FakeContainer:
+    id = "fake-container"
+
+    def __init__(self, start_delay: float) -> None:
+        self.start_delay, self.waited = start_delay, None
+        self.killed = self.removed = False
+
+    def start(self):
+        time.sleep(self.start_delay)
+
+    def wait(self, timeout):
+        self.waited = timeout
+        return {"StatusCode": 1}
+
+    def logs(self, stdout, stderr):
+        return b""
+
+    def kill(self):
+        self.killed = True
+
+    def remove(self, force):
+        self.removed = True
+
+
+class FakeDocker:
+    """Images missing until ``present_after`` lookups; containers slow to create or start."""
+
+    def __init__(self, present_after=0, create_delay=0.0, start_delay=0.0) -> None:
+        self.lookups, self.present_after, self.create_delay = 0, present_after, create_delay
+        self.container = FakeContainer(start_delay)
+        self.images = self.containers = self
+
+    def ping(self):
+        return True
+
+    def get(self, tag):
+        import docker
+
+        self.lookups += 1
+        if self.lookups <= self.present_after:
+            raise docker.errors.ImageNotFound(tag)
+        return type("Image", (), {"id": "sha256:fake"})()
+
+    def create(self, image, argv, **kwargs):
+        time.sleep(self.create_delay)
+        return self.container
+
+
+def fake_executor(fake: FakeDocker, build: str = "pass"):
+    from harness.onboard.validator import DockerExecutor
+
+    class Executor(DockerExecutor):
+        def build_argv(self):
+            return [os.sys.executable, "-c", build]
+
+    executor = Executor()
+    executor._client = fake
+    return executor
+
+
+def slow_build(pid_file: Path) -> str:
+    return f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+
+
+def test_a_cold_image_build_has_its_own_limit_and_is_killed(tmp_path):
+    spec = make_spec(tmp_path, executor="docker", time_limit_s=0.1, prepare_timeout_s=1.0)
+    pid_file = tmp_path / "build.pid"
+    executor = fake_executor(FakeDocker(present_after=1), slow_build(pid_file))
+    started = time.monotonic()
+    _, record, model = attempt(spec, Script(PLAN, adapter(GOOD)), executor=executor)
+    assert time.monotonic() - started < 5
+    assert record["stop_reason"] == "prepare_timeout" and record["category"] == "env_error"
+    assert "out of time" in record["preparation"]["error"] and model.calls == 0
+    assert gone(pid_file)
+
+
+def test_a_ready_image_starts_the_attempt_clock_afterwards(tmp_path):
+    # a 1s build does not use up a 0.8s attempt
+    spec = make_spec(tmp_path, executor="docker", time_limit_s=0.8, max_rounds=1)
+    executor = fake_executor(FakeDocker(present_after=1), "import time; time.sleep(1)")
+    _, record, model = attempt(spec, Script(PLAN, adapter(GOOD)), executor=executor)
+    assert record["preparation"]["built"] and record["preparation"]["tag"] == executor.tag()
+    assert record["preparation"]["prepare_s"] >= 1.0
+    assert model.calls == 2 and record["stop_reason"] == "max_rounds"
+    assert record["rounds"][0]["category"] == "validation_crashed"  # the fake runs nothing
+
+
+def test_cancelling_during_preparation_kills_the_build(tmp_path):
+    spec = make_spec(tmp_path, executor="docker")
+    pid_file = tmp_path / "build.pid"
+    executor = fake_executor(FakeDocker(present_after=1), slow_build(pid_file))
+    agent = OnboardAgent(spec, MockModel(Script(PLAN)), executor=executor)
+
+    async def main():
+        task = asyncio.create_task(agent.run())
+        while not pid_file.exists():
+            await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert gone(pid_file)
+    record = json.loads((agent.dir / "attempt.json").read_text())
+    assert record["stop_reason"] == "cancelled" and agent.model.calls == 0
+
+
+def test_validation_charges_image_preparation_to_its_timeout(tmp_path):
+    spec = make_spec(tmp_path, executor="docker")
+    (tmp_path / "cand").mkdir()
+    (tmp_path / "cand" / "adapter.py").write_text(GOOD)
+    pid_file = tmp_path / "build.pid"
+    executor = fake_executor(FakeDocker(present_after=1), slow_build(pid_file))
+    started = time.monotonic()
+    report = validate(spec, tmp_path / "cand", executor, timeout=0.5)
+    assert time.monotonic() - started < 3
+    assert report["category"] == "validation_timeout" and "preparing" in report["detail"]
+    assert gone(pid_file)
+
+
+def test_a_slow_container_create_is_bounded_and_the_late_container_removed(tmp_path):
+    fake = FakeDocker(create_delay=1.0)
+    executor = fake_executor(fake)
+    started = time.monotonic()
+    res = executor.run(["python", "-V"], workdir=tmp_path, timeout=0.3)
+    assert res.timed_out and time.monotonic() - started < 0.8
+    assert not fake.container.removed  # still being created
+    time.sleep(1.0)
+    assert fake.container.removed and fake.container.waited is None
+
+
+def test_a_slow_container_start_is_bounded_killed_and_removed(tmp_path):
+    fake = FakeDocker(start_delay=1.0)
+    started = time.monotonic()
+    res = fake_executor(fake).run(["python", "-V"], workdir=tmp_path, timeout=0.3)
+    assert res.timed_out and time.monotonic() - started < 0.8
+    assert fake.container.killed and fake.container.removed
+
+
+def test_waiting_for_a_container_gets_only_the_time_left(tmp_path):
+    fake = FakeDocker(create_delay=0.3, start_delay=0.2)
+    fake_executor(fake).run(["python", "-V"], workdir=tmp_path, timeout=1.0)
+    assert fake.container.waited <= 0.55 and fake.container.removed
+
+
+@needs_docker
+def test_docker_aborts_a_slow_image_build(tmp_path):
+    import uuid
+
+    import docker
+
+    from harness.onboard.validator import DockerExecutor, PrepareTimeout
+
+    marker = f"sleep 60 # {uuid.uuid4().hex}"
+
+    class SlowBuild(DockerExecutor):
+        def dockerfile(self):
+            return f"FROM python:3.12-slim\nRUN {marker}\n"
+
+    started = time.monotonic()
+    with pytest.raises(PrepareTimeout):
+        SlowBuild().prepare(timeout=4)
+    assert time.monotonic() - started < 10
+    client = docker.from_env()
+
+    def building():
+        return [c for c in client.containers.list(all=True) if marker in str(c.attrs["Args"])]
+
+    deadline = time.monotonic() + 10
+    while building() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert building() == []
