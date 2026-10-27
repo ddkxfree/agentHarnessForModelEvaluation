@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+阶段八 O3b 补修（2026-10-27，基于 master `c6e0219`）：取消在每次交接时于同一把锁下检查，已取消执行器不再构建、创建、启动或等待；取消单独记为 `cancelled`。新增确定性回归不依赖 Docker；393 passed，静态检查通过，待复评。真实模型接入仍待验证。详见 [32](progress/32-onboarding-cancel-race-fix.md)。
+
 最新复评（2026-10-27，master `ff27973`，PR #23）：镜像准备独立限时、容器创建／启动与剩余时间扣减的现有回归通过；取消与创建结果交接仍有竞态，已取消后可能启动候选容器（P2 O3b）。本机 345 passed、24 skipped，静态检查通过；本会话 Docker 不可连接、真实模型接入未执行。详见 [31](progress/31-onboarding-o3a-review.md)。下列状态为历史记录。
 
 阶段八 O3a 补修（2026-10-27，基于 master `aa71a50`）：镜像准备独立限时（`prepare_timeout_s`），在尝试计时前完成并记录，超时或取消时 kill 构建；容器创建、启动和等待共用剩余时间。Docker 隔离回归在 Docker 29.1.3 上全部通过；386 passed，静态检查通过，待复评。真实模型接入仍待验证。详见 [30](progress/30-onboarding-o3a-fix.md)。
