@@ -30,6 +30,9 @@ class Budget(BaseModel):
     # input + output tokens reported by the server, over all model calls
     token_limit: int | None = Field(default=None, ge=1)
     validation_timeout_s: float = Field(default=120.0, gt=0)
+    # Getting the executor ready (building the checker image on first use) before the attempt
+    # starts; not part of ``time_limit_s``.
+    prepare_timeout_s: float = Field(default=900.0, gt=0)
 
 
 class OnboardSpec(BaseModel):

@@ -11,7 +11,8 @@ Loop:
 4. on failure the diagnosis goes back to the model for another round, until the rounds, model
    steps, tokens or time run out. ``time_limit_s`` is one deadline for the whole attempt: model
    waits, retries, validation and self tests get only the time left, and nothing that finishes
-   after it counts as passed.
+   after it counts as passed. Getting the executor ready (building the checker image on first
+   use) happens before that clock starts, within ``prepare_timeout_s``.
 
 Everything is archived in the attempt directory: spec and source hashes, model identity, prompt
 and reply-format versions, budget, every model call, every round's files and validation, the
@@ -45,10 +46,12 @@ from harness.onboard.validator import (
     SOURCE_CHANGED,
     VALIDATOR_VERSION,
     Executor,
+    PrepareTimeout,
     make_executor,
     validate,
 )
 from harness.onboard.workspace import CandidateWorkspace, WriteRejected, sha256
+from harness.sandbox.base import SandboxError
 
 PROMPT_VERSION = "onboard_prompt_v1"
 REPLY_FORMAT_VERSION = "onboard_reply_v1"
@@ -416,6 +419,24 @@ class OnboardAgent:
             f"{self.spec.budget.max_rounds} rounds used; last round: {last}",
         )
 
+    async def _prepare(self) -> None:
+        """Get the executor ready (e.g. build the checker image) within its own limit, before
+        the attempt's clock starts; a cold build is not charged to ``time_limit_s``."""
+        limit = self.spec.budget.prepare_timeout_s
+        try:
+            self.record["preparation"] = await asyncio.to_thread(self.executor.prepare, limit)
+        except asyncio.CancelledError:
+            self.executor.cancel()
+            raise
+        except PrepareTimeout as exc:
+            self.record["preparation"] = {"error": str(exc)}
+            raise StopAttempt("prepare_timeout", ENV_ERROR, str(exc)) from None
+        except SandboxError as exc:
+            self.record["preparation"] = {"error": str(exc)}
+            raise StopAttempt(ENV_ERROR, ENV_ERROR, str(exc)) from None
+        self.started = self.clock()
+        self._save()
+
     async def _validate(self) -> dict[str, Any]:
         """Independent validation in a worker thread, within the time left; cancelling it
         kills the check processes or containers."""
@@ -457,6 +478,7 @@ class OnboardAgent:
             "spec_path": str(self.spec_path) if self.spec_path else None,
             "budget": spec.budget.model_dump(),
             "usage": self.usage.model_dump(),
+            "preparation": None,
             "plan": None,
             "questions": [],
             "steps": [],
@@ -479,6 +501,7 @@ class OnboardAgent:
                     f"source fingerprint is {ident['source_sha256']}, the spec pins "
                     f"{spec.source_sha256}",
                 )
+            await self._prepare()
             await self._plan()
             await self._rounds()
         except StopAttempt as exc:

@@ -13,7 +13,6 @@ filesystem isolation; it is only for trusted, scripted candidates (tests, the de
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
@@ -62,6 +61,11 @@ class Executor(Protocol):
     executor kills whatever it starts afterwards too.
     """
 
+    def prepare(self, timeout: float) -> dict[str, Any]:
+        """Get ready to run (e.g. the image) within ``timeout``; raises PrepareTimeout when
+        out of time or cancelled. Returns what was prepared, for the record."""
+        ...
+
     def run(self, argv: list[str], *, workdir: Path, timeout: float) -> ExecResult: ...
 
     def cancel(self) -> None: ...
@@ -96,6 +100,9 @@ class SubprocessExecutor:
         self._live: set[subprocess.Popen] = set()
         self._lock = threading.Lock()
         self._cancelled = False
+
+    def prepare(self, timeout: float) -> dict[str, Any]:
+        return {"prepare_s": 0.0}
 
     def run(self, argv: list[str], *, workdir: Path, timeout: float) -> ExecResult:
         argv = [sys.executable if a == "python" and i == 0 else a for i, a in enumerate(argv)]
@@ -155,10 +162,37 @@ class SubprocessExecutor:
 SANDBOX_PACKAGES = ("pydantic", "numpy", "pytest")
 
 
+class PrepareTimeout(SandboxError):
+    """The executor could not get ready in the time it was given."""
+
+
+class _GaveUp(Exception):
+    def __init__(self, cancelled: bool) -> None:
+        super().__init__("cancelled" if cancelled else "out of time")
+        self.cancelled = cancelled
+
+
+# Run in a child process, so that killing it drops the connection and the daemon aborts the build.
+_BUILD = """\
+import io, sys, docker
+client = docker.from_env()
+for chunk in client.api.build(
+    fileobj=io.BytesIO(sys.argv[1].encode()), tag=sys.argv[2], rm=True, forcerm=True, decode=True
+):
+    if "error" in chunk:
+        sys.exit(chunk["error"])
+"""
+
+
 class DockerExecutor:
     """One container per check: no network, read-only root filesystem, only the scratch
     directory writable (mounted at /work), the harness package read-only, no capabilities,
-    memory, CPU and process limits, the host user's uid, and removal afterwards."""
+    memory, CPU and process limits, the host user's uid, and removal afterwards.
+
+    Getting the checker image ready (``prepare``) and creating, starting and waiting for a
+    container all stay within the time given and stop on ``cancel``: an image build runs in a
+    child process that is killed, and a container created after giving up is removed.
+    """
 
     isolation = "container"
     WORKDIR = "/work"
@@ -178,11 +212,17 @@ class DockerExecutor:
         self._image: dict[str, Any] | None = None
         self._live: dict[str, Any] = {}
         self._lock = threading.Lock()
-        self._cancelled = False
+        self._cancel = threading.Event()
 
     def dockerfile(self) -> str:
         pins = " ".join(f"{p}=={metadata.version(p)}" for p in SANDBOX_PACKAGES)
         return f"FROM {self.base_image}\nRUN pip install --no-cache-dir {pins}\n"
+
+    def tag(self) -> str:
+        return f"harness-onboard:{fingerprint({'dockerfile': self.dockerfile()})}"
+
+    def build_argv(self) -> list[str]:
+        return [sys.executable, "-c", _BUILD, self.dockerfile(), self.tag()]
 
     @property
     def client(self) -> Any:
@@ -190,42 +230,120 @@ class DockerExecutor:
             import docker
 
             try:
-                self._client = docker.from_env()
-                self._client.ping()
+                client = docker.from_env()
+                client.ping()
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"Docker is not available: {exc}") from exc
+            self._client = client
         return self._client
 
-    def image(self) -> dict[str, Any]:
-        """The checker image, built once per Dockerfile content."""
-        if self._image is None:
-            import docker
+    def _bounded(self, fn: Any, timeout: float, on_late: Any = None) -> Any:
+        """``fn()`` in a helper thread, given up at ``timeout`` or on cancel (``_GaveUp``).
+        A value that arrives after giving up is passed to ``on_late``."""
+        box: dict[str, Any] = {}
+        done = threading.Event()
+        gate = threading.Lock()
 
-            text = self.dockerfile()
-            tag = f"harness-onboard:{fingerprint({'dockerfile': text})}"
+        def work() -> None:
             try:
-                try:
-                    img = self.client.images.get(tag)
-                except docker.errors.ImageNotFound:
-                    img, _ = self.client.images.build(
-                        fileobj=io.BytesIO(text.encode()), tag=tag, rm=True
-                    )
-            except docker.errors.DockerException as exc:
-                raise SandboxError(f"cannot build {tag}: {exc}") from exc
-            self._image = {"tag": tag, "id": img.id, "dockerfile": text}
-        return self._image
+                box["value"] = fn()
+            except BaseException as exc:
+                box["error"] = exc
+            with gate:
+                done.set()
+                late = box.get("abandoned", False)
+            if late and "value" in box and on_late is not None:
+                on_late(box["value"])
+
+        threading.Thread(target=work, daemon=True).start()
+        end = time.monotonic() + timeout
+        while not done.wait(min(0.05, max(end - time.monotonic(), 0.0))):
+            if self._cancel.is_set() or time.monotonic() >= end:
+                with gate:
+                    if not done.is_set():
+                        box["abandoned"] = True
+                        raise _GaveUp(self._cancel.is_set())
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
+    def prepare(self, timeout: float) -> dict[str, Any]:
+        """Find or build the checker image within ``timeout`` seconds; raises PrepareTimeout
+        when out of time or cancelled, SandboxError when Docker cannot do it."""
+        if self._image is not None:
+            return {**self._image, "built": False, "prepare_s": 0.0}
+        import docker
+
+        tag, started = self.tag(), time.monotonic()
+
+        def left() -> float:
+            return timeout - (time.monotonic() - started)
+
+        def lookup() -> Any:
+            try:
+                return self.client.images.get(tag)
+            except docker.errors.ImageNotFound:
+                return None
+
+        try:
+            img = self._bounded(lookup, left())
+            built = img is None
+            if built:
+                self._build(left())
+                img = self._bounded(lambda: self.client.images.get(tag), left())
+        except _GaveUp as exc:
+            raise PrepareTimeout(
+                f"preparing {tag} was {exc} after {time.monotonic() - started:.1f}s"
+            ) from None
+        except docker.errors.DockerException as exc:
+            raise SandboxError(f"cannot prepare {tag}: {exc}") from exc
+        self._image = {"tag": tag, "id": img.id, "dockerfile": self.dockerfile()}
+        return {**self._image, "built": built, "prepare_s": time.monotonic() - started}
+
+    def _build(self, timeout: float) -> None:
+        try:
+            proc = subprocess.Popen(
+                self.build_argv(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise SandboxError(f"cannot start the image build: {exc}") from exc
+        end = time.monotonic() + timeout
+        while True:
+            try:
+                proc.wait(timeout=min(0.05, max(end - time.monotonic(), 0.0)))
+                break
+            except subprocess.TimeoutExpired:
+                if self._cancel.is_set() or time.monotonic() >= end:
+                    SubprocessExecutor._kill(proc)
+                    proc.wait()
+                    raise _GaveUp(self._cancel.is_set()) from None
+        if proc.returncode != 0:
+            err = _text(proc.stderr.read() if proc.stderr else b"")
+            raise SandboxError(f"building {self.tag()} failed:\n{_tail(err)}")
 
     def run(self, argv: list[str], *, workdir: Path, timeout: float) -> ExecResult:
         import docker
         import requests
 
-        image = self.image()["tag"]
-        package = Path(harness.__file__).resolve().parent
+        end = time.monotonic() + timeout
+
+        def left() -> float:
+            return max(end - time.monotonic(), 0.0)
+
         try:
-            container = self.client.containers.run(
+            image = self.prepare(left())["tag"]
+        except PrepareTimeout as exc:
+            return ExecResult(-1, "", str(exc), timed_out=True)
+        package = Path(harness.__file__).resolve().parent
+
+        def create() -> Any:
+            return self.client.containers.create(
                 image,
                 argv,
-                detach=True,
                 working_dir=self.WORKDIR,
                 user=f"{os.getuid()}:{os.getgid()}",
                 environment={
@@ -249,18 +367,22 @@ class DockerExecutor:
                 security_opt=["no-new-privileges"],
                 labels={"harness.onboard": "check"},
             )
+
+        try:
+            container = self._bounded(create, left(), on_late=self._remove)
+        except _GaveUp as exc:
+            return ExecResult(-1, "", f"creating the check container was {exc}", timed_out=True)
         except docker.errors.DockerException as exc:
-            raise SandboxError(f"cannot start the check container: {exc}") from exc
+            raise SandboxError(f"cannot create the check container: {exc}") from exc
         with self._lock:
             self._live[container.id] = container
-            if self._cancelled:
-                self._kill(container)
-        timed_out = False
+        timed_out, code, out, err = False, -1, "", ""
         try:
             try:
-                code = container.wait(timeout=max(timeout, 0.001))["StatusCode"]
-            except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
-                timed_out, code = True, -1
+                self._bounded(container.start, left())
+                code = container.wait(timeout=max(left(), 0.001))["StatusCode"]
+            except (_GaveUp, requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
+                timed_out = True
                 self._kill(container)
             out = _text(container.logs(stdout=True, stderr=False))
             err = _text(container.logs(stdout=False, stderr=True))
@@ -269,10 +391,7 @@ class DockerExecutor:
         finally:
             with self._lock:
                 self._live.pop(container.id, None)
-            try:
-                container.remove(force=True)
-            except docker.errors.DockerException:
-                pass
+            self._remove(container)
         return ExecResult(code, out, err, timed_out=timed_out)
 
     @staticmethod
@@ -284,9 +403,18 @@ class DockerExecutor:
         except docker.errors.DockerException:
             pass
 
+    @staticmethod
+    def _remove(container: Any) -> None:
+        import docker
+
+        try:
+            container.remove(force=True)
+        except docker.errors.DockerException:
+            pass
+
     def cancel(self) -> None:
+        self._cancel.set()
         with self._lock:
-            self._cancelled = True
             for container in list(self._live.values()):
                 self._kill(container)
 
@@ -297,7 +425,7 @@ class DockerExecutor:
         return {
             "type": "docker",
             "isolation": self.isolation,
-            "image": self.image(),
+            "image": self._image or {"tag": self.tag(), "id": None},
             "network": "none",
             "read_only_root": True,
             "writable": [self.WORKDIR, "/tmp (tmpfs)"],
@@ -367,16 +495,17 @@ def validate(
 ) -> dict[str, Any]:
     """Validate the candidate files in ``candidate``; returns a structured report.
 
-    ``timeout`` bounds the whole validation, self test included; each command also stays
-    within ``budget.validation_timeout_s``. ``category`` is None when every check passed;
-    otherwise one of the check categories (import, dependency, protocol, field, scoring,
-    protected) or ``validation_timeout``, ``validation_crashed``, ``env_error`` or
-    ``source_changed``.
+    ``timeout`` bounds the whole validation, executor preparation and self test included.
+    Preparing the executor (e.g. building the checker image) also stays within
+    ``budget.prepare_timeout_s``, and each command within ``budget.validation_timeout_s``.
+    ``category`` is None when every check passed; otherwise one of the check categories
+    (import, dependency, protocol, field, scoring, protected) or ``validation_timeout``,
+    ``validation_crashed``, ``env_error`` or ``source_changed``.
     """
     started = time.monotonic()
 
-    def left() -> float:
-        limit = spec.budget.validation_timeout_s
+    def left(limit: float | None = None) -> float:
+        limit = spec.budget.validation_timeout_s if limit is None else limit
         if timeout is None:
             return limit
         return min(limit, timeout - (time.monotonic() - started))
@@ -408,10 +537,16 @@ def validate(
             f"source package fingerprint is {report['source_sha256_before']}, expected "
             f"{expected_source}; an earlier validation does not carry over",
         )
+    limit = left(spec.budget.prepare_timeout_s)
+    if limit <= 0:
+        return finish(VALIDATION_TIMEOUT, "no time left for validation")
     try:
-        report["executor"] = executor.describe()
+        report["preparation"] = executor.prepare(limit)
+    except PrepareTimeout as exc:
+        return finish(VALIDATION_TIMEOUT, str(exc))
     except SandboxError as exc:
         return finish(ENV_ERROR, str(exc))
+    report["executor"] = executor.describe()
     payload = {"nonce": secrets.token_hex(16), "cases": read_cases(spec)}
     payload["expected"] = read_expected(spec)
     with tempfile.TemporaryDirectory(prefix="onboard-validate-") as tmp:
