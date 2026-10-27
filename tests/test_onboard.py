@@ -1,10 +1,15 @@
-"""The onboarding agent with scripted MockModel replies and real validation subprocesses."""
+"""The onboarding agent with scripted MockModel replies and real validation subprocesses.
+
+The scripted candidates are trusted, so most tests validate them with the subprocess executor;
+the container isolation tests at the end need Docker."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -83,23 +88,36 @@ class Script:
         return reply
 
 
-def make_spec(tmp_path: Path, **budget) -> OnboardSpec:
+def make_spec(tmp_path: Path, *, executor="subprocess", imports=(), **budget) -> OnboardSpec:
     source = tmp_path / "source"
     if not source.exists():
         shutil.copytree(EXAMPLE, source)
-    return OnboardSpec(
+    spec = OnboardSpec(
         task="world-capitals",
         source=source,
         source_sha256=fingerprint_dir(source),
+        executor=executor,
         budget=Budget(**budget),
         output_dir=tmp_path / "runs",
     )
+    spec.allowed_imports += list(imports)
+    return spec
 
 
-def attempt(spec, script, **kwargs):
-    model = MockModel(script, name="scripted")
-    run_dir = asyncio.run(OnboardAgent(spec, model, retry_base_delay=0, **kwargs).run())
+def attempt(spec, script, model=None, **kwargs):
+    model = model or MockModel(script, name="scripted")
+    kwargs.setdefault("retry_base_delay", 0)
+    run_dir = asyncio.run(OnboardAgent(spec, model, **kwargs).run())
     return run_dir, json.loads((run_dir / "attempt.json").read_text()), model
+
+
+def check(spec, tmp_path, text, test=None):
+    cand = tmp_path / "cand"
+    cand.mkdir(exist_ok=True)
+    (cand / "adapter.py").write_text(text)
+    if test is not None:
+        (cand / "test_adapter.py").write_text(test)
+    return validate(spec, cand)
 
 
 # --- 1. a valid adapter --------------------------------------------------------------------
@@ -111,7 +129,15 @@ def test_a_valid_adapter_passes_independent_validation(tmp_path):
     assert record["status"] == "passed" and record["stop_reason"] == "validated"
     assert record["category"] is None and len(record["rounds"]) == 1
     report = record["rounds"][0]["validation"]
-    assert [c["name"] for c in report["checks"]] == ["static", "import", "protocol", "cases"]
+    assert [c["name"] for c in report["checks"]] == [
+        "static",
+        "import",
+        "protocol",
+        "fields",
+        "prompts",
+        "cases",
+    ]
+    assert report["executor"]["isolation"] == "none"
     # every frozen case plus an empty output per named sample, which must fail
     assert len(report["cases"]) == 11 + 6
     assert all(c["passed"] for c in report["cases"])
@@ -191,6 +217,7 @@ def test_self_test_failures_are_reported_but_do_not_decide(tmp_path):
         "data/capitals.tsv",
         "SCORING.md",
         "acceptance.jsonl",
+        "expected.jsonl",
         "README.md",
         "../adapter.py",
         "/tmp/adapter.py",
@@ -263,26 +290,124 @@ def test_the_token_limit_stops_before_the_next_call(tmp_path):
     assert record["usage"] == {"input_tokens": 1800, "output_tokens": 200}
 
 
-def test_the_time_limit_stops_the_attempt(tmp_path):
-    ticks = iter([0.0, 0.0, 10.0, 10.0, 10.0])
-    spec = make_spec(tmp_path, time_limit_s=5)
-    _, record, _ = attempt(spec, Script(PLAN, adapter(GOOD)), clock=lambda: next(ticks, 10.0))
-    assert record["stop_reason"] == "time_limit" and len(record["steps"]) == 1
+class SlowModel(MockModel):
+    """Waits ``delays[n]`` seconds (really, in the event loop) before its n-th reply."""
+
+    def __init__(self, script, *delays: float) -> None:
+        super().__init__(script, name="slow")
+        self.delays = list(delays)
+
+    async def generate(self, messages, config, tools=None):
+        await asyncio.sleep(self.delays[self.calls] if self.calls < len(self.delays) else 0)
+        return await super().generate(messages, config, tools)
+
+
+def test_the_time_limit_cuts_a_model_call_short(tmp_path):
+    spec = make_spec(tmp_path, time_limit_s=0.3)
+    model = SlowModel(Script(PLAN, adapter(GOOD)), 0, 5.0)
+    started = time.monotonic()
+    run_dir, record, _ = attempt(spec, None, model=model)
+    assert time.monotonic() - started < 2.0
+    assert record["status"] == "failed" and record["stop_reason"] == "time_limit"
+    assert record["category"] == "budget_exhausted" and "model step 2" in record["stop_detail"]
+    assert "TimeoutError" in record["steps"][-1]["error"]
+    assert record["rounds"] == [] and (run_dir / "conversation.json").exists()
+
+
+def test_the_time_limit_bounds_retry_backoff(tmp_path):
+    spec = make_spec(tmp_path, time_limit_s=0.3)
+    script = Script(PLAN, TimeoutError("slow server"), adapter(GOOD))
+    started = time.monotonic()
+    _, record, _ = attempt(spec, script, retry_base_delay=10.0)
+    assert time.monotonic() - started < 2.0  # the first backoff alone would be 5-10s
+    assert record["stop_reason"] == "time_limit" and record["steps"][-1]["attempts"] == 1
+
+
+SLEEPS = """\
+import os
+import time
+from pathlib import Path
+
+Path({pid_file!r}).write_text(str(os.getpid()))
+time.sleep(60)
+"""
+
+
+def sleeping_adapter(pid_file: Path) -> str:
+    return SLEEPS.format(pid_file=str(pid_file)) + GOOD.split("\n", 1)[1]
+
+
+def gone(pid_file: Path, within: float = 5.0) -> bool:
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_the_time_limit_bounds_validation_and_kills_it(tmp_path):
+    spec = make_spec(tmp_path, imports=["os", "time"], time_limit_s=1.5, validation_timeout_s=60)
+    pid_file = tmp_path / "check.pid"
+    started = time.monotonic()
+    _, record, _ = attempt(spec, Script(PLAN, adapter(sleeping_adapter(pid_file))))
+    assert time.monotonic() - started < 10
+    assert record["stop_reason"] == "time_limit" and record["status"] == "failed"
+    assert record["rounds"][0]["category"] == "validation_timeout"
+    assert gone(pid_file)
+
+
+def test_cancelling_an_attempt_kills_the_validation(tmp_path):
+    spec = make_spec(tmp_path, imports=["os", "time"], validation_timeout_s=60)
+    pid_file = tmp_path / "check.pid"
+    agent = OnboardAgent(spec, MockModel(Script(PLAN, adapter(sleeping_adapter(pid_file)))))
+
+    async def main():
+        task = asyncio.create_task(agent.run())
+        while not pid_file.exists():
+            await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    started = time.monotonic()
+    asyncio.run(main())
+    assert time.monotonic() - started < 15
+    assert gone(pid_file)
+    record = json.loads((agent.dir / "attempt.json").read_text())
+    assert record["status"] == "failed" and record["stop_reason"] == "cancelled"
+    assert record["final_files"]  # the written candidate is kept
+
+
+class LateExecutor(SubprocessExecutor):
+    """Ignores the time limit it is given, so a passing report arrives after the deadline."""
+
+    def run(self, argv, *, workdir, timeout):
+        time.sleep(0.5)
+        return super().run(argv, workdir=workdir, timeout=60)
+
+
+def test_a_passing_validation_after_the_deadline_does_not_count(tmp_path):
+    spec = make_spec(tmp_path, time_limit_s=0.4)
+    _, record, _ = attempt(spec, Script(PLAN, adapter(GOOD)), executor=LateExecutor())
+    assert record["rounds"][0]["validation"]["passed"]
+    assert record["status"] == "failed" and record["stop_reason"] == "time_limit"
+    assert "validation of round 1" in record["stop_detail"]
 
 
 # --- 6. environment failures vs code failures ------------------------------------------------
 
 
-class BrokenExecutor:
-    def run(self, argv, *, cwd, stdin, timeout):
+class BrokenExecutor(SubprocessExecutor):
+    def run(self, argv, *, workdir, timeout):
         raise SandboxError("docker daemon not reachable")
-
-    def describe(self):
-        return {"type": "broken"}
 
 
 class TimeoutExecutor(SubprocessExecutor):
-    def run(self, argv, *, cwd, stdin, timeout):
+    def run(self, argv, *, workdir, timeout):
         return ExecResult(-1, "", "still running", timed_out=True)
 
 
@@ -361,10 +486,7 @@ def test_reverification_notices_edited_candidate_files(tmp_path):
 
 def test_validation_alone_rejects_an_always_correct_scorer(tmp_path):
     spec = make_spec(tmp_path)
-    cand = tmp_path / "cand"
-    cand.mkdir()
-    (cand / "adapter.py").write_text(ALWAYS_CORRECT)
-    report = validate(spec, cand)
+    report = check(spec, tmp_path, ALWAYS_CORRECT)
     wrongly_correct = [c for c in report["cases"] if c["expect"] == "wrong" and not c["passed"]]
     assert report["category"] == "scoring_error" and len(wrongly_correct) == 5 + 6
 
@@ -411,6 +533,7 @@ def test_file_blocks_may_be_fenced():
 def test_the_shipped_spec_pins_the_example_source():
     spec = load_spec(ROOT / "configs" / "onboard-world-capitals.yaml")
     assert spec.source_sha256 == fingerprint_dir(ROOT / spec.source)
+    assert spec.executor == "docker"  # model-written code is never run on the host by default
     assert spec.model is None  # the model is chosen on the command line
 
 
@@ -430,3 +553,190 @@ def test_cli_onboard_and_verify(tmp_path, monkeypatch):
     run_dir, _, _ = attempt(spec, Script(PLAN, adapter(GOOD)))
     ok = CliRunner().invoke(app, ["onboard-verify", str(run_dir)])
     assert ok.exit_code == 0 and "passed" in ok.output
+
+
+# --- 8. field meaning and what the model is shown --------------------------------------------
+
+QUESTION = 'input=TEMPLATE.format(country=r["country"])'
+LOADS = GOOD.replace("def load_samples", "_LOADS = []\n\n\ndef load_samples").replace(
+    "    return [\n        Sample(", "    _LOADS.append(1)\n    return [\n        Sample("
+)
+
+
+@pytest.mark.parametrize(
+    "broken, category, detail",
+    [
+        (GOOD.replace(QUESTION, 'input=""'), "field_error", "input is empty"),
+        (GOOD.replace(QUESTION, 'input=r["capital"]'), "field_error", "input is 'Paris'"),
+        (GOOD.replace(QUESTION, 'input=r["country"]'), "field_error", "input is 'France'"),
+        (
+            GOOD.replace("{country}?", "this country?"),
+            "field_error",
+            "expected 'What is the capital of France?",
+        ),
+        (
+            GOOD.replace('target=r["capital"]', 'target=r["country"]'),
+            "field_error",
+            "target is 'France', expected 'Paris'",
+        ),
+        (
+            LOADS.replace(QUESTION, QUESTION + ' + " " * len(_LOADS)'),
+            "protocol_error",
+            "two load() calls returned different samples",
+        ),
+        (
+            GOOD.replace("PromptSolver(lambda s: s.input,", "PromptSolver(lambda s: s.target,"),
+            "field_error",
+            "the model is asked 'Paris'",
+        ),
+        (
+            GOOD.replace(
+                "PromptSolver(lambda s: s.input,",
+                "PromptSolver(lambda s: s.input, fewshot=lambda s: [s], "
+                "assistant_template=lambda s: s.target,",
+            ),
+            "field_error",
+            "the answer is shown to the model",
+        ),
+    ],
+    ids=[
+        "empty-input",
+        "target-as-input",
+        "country-only",
+        "question-without-country",
+        "wrong-target",
+        "content-changes-between-loads",
+        "prompt-is-the-answer",
+        "answer-in-a-fewshot-turn",
+    ],
+)
+def test_frozen_expected_samples_catch_field_mistakes(tmp_path, broken, category, detail):
+    assert broken != GOOD
+    spec = make_spec(tmp_path)
+    report = check(spec, tmp_path, broken)
+    assert not report["passed"] and report["category"] == category, report.get("detail")
+    assert detail in report["detail"]
+
+
+def test_the_agent_never_sees_the_expected_samples_and_they_are_deleted_before_import(tmp_path):
+    spec = make_spec(tmp_path)
+    peek = GOOD.replace(
+        "DEFAULT_DATA =",
+        'assert not Path("payload.json").exists(), "payload leaked"\nDEFAULT_DATA =',
+    )
+    _, record, _ = attempt(spec, Script(PLAN, adapter(peek)))
+    assert record["status"] == "passed"
+    assert spec.path("expected.jsonl") in spec.protected()
+
+
+# --- 9. isolation of candidate code (needs Docker) -------------------------------------------
+
+
+def _docker_available() -> bool:
+    try:
+        import docker
+
+        docker.from_env().ping()
+        return True
+    except Exception:
+        return False
+
+
+needs_docker = pytest.mark.skipif(not _docker_available(), reason="Docker is not available")
+
+ESCAPE = """\
+from pathlib import Path
+
+Path({outside!r}).write_text("escaped")
+"""
+
+
+def escaping_adapter(outside: Path) -> str:
+    return ESCAPE.format(outside=str(outside)) + GOOD.split("\n", 1)[1]
+
+
+def test_the_subprocess_executor_does_not_isolate_the_host(tmp_path):
+    # why it is only for trusted candidates: a plain write lands on the host
+    spec = make_spec(tmp_path)
+    outside = tmp_path / "outside.txt"
+    report = check(spec, tmp_path, escaping_adapter(outside))
+    assert outside.exists() and report["passed"]
+
+
+@needs_docker
+def test_docker_blocks_adapter_writes_outside_its_scratch_directory(tmp_path):
+    spec = make_spec(tmp_path, executor="docker")
+    outside = tmp_path / "outside.txt"
+    report = check(spec, tmp_path, escaping_adapter(outside))
+    assert not report["passed"] and report["category"] == "import_error"
+    assert not outside.exists()
+    assert report["executor"]["isolation"] == "container"
+    assert report["executor"]["network"] == "none"
+
+
+@needs_docker
+def test_docker_blocks_writes_to_the_harness_package(tmp_path):
+    import harness
+
+    spec = make_spec(tmp_path, executor="docker")
+    # the package as the candidate sees it: mounted read-only inside the container
+    write = (
+        "import harness\nfrom pathlib import Path\n"
+        "Path(harness.__file__).with_name('onboard_escape.txt').write_text('escaped')\n"
+    )
+    report = check(spec, tmp_path, write + GOOD.split("\n", 1)[1])
+    assert report["category"] == "import_error" and "Read-only file system" in report["detail"]
+    assert not (Path(harness.__file__).parent / "onboard_escape.txt").exists()
+
+
+@needs_docker
+def test_docker_blocks_self_test_writes_outside_and_the_network(tmp_path):
+    spec = make_spec(tmp_path, executor="docker")
+    outside = tmp_path / "from-self-test.txt"
+    test = SELF_TEST + (
+        "\n\ndef test_escape():\n"
+        "    from pathlib import Path\n"
+        f"    Path({str(outside)!r}).write_text('escaped')\n"
+        "\n\ndef test_network():\n"
+        "    import socket\n"
+        "    socket.create_connection(('1.1.1.1', 53), timeout=3)\n"
+    )
+    report = check(spec, tmp_path, GOOD, test)
+    assert report["passed"]  # the adapter itself is fine
+    self_test = report["self_test"]
+    assert self_test["status"] == "failed" and "2 failed, 1 passed" in self_test["output"]
+    assert not outside.exists()
+
+
+@needs_docker
+def test_docker_validation_matches_the_subprocess_one(tmp_path):
+    spec = make_spec(tmp_path, executor="docker")
+    good = check(spec, tmp_path, GOOD)
+    assert good["passed"] and len(good["cases"]) == 17
+    wrong = check(spec, tmp_path, WRONG_FIELD)
+    assert wrong["category"] == "protocol_error" and "<sandbox>" in wrong["detail"]
+    assert "/work" not in wrong["detail"]
+
+
+@needs_docker
+def test_docker_kills_and_removes_containers_on_timeout_and_cancel(tmp_path):
+    import threading
+
+    import docker
+
+    from harness.onboard.validator import DockerExecutor
+
+    spec = make_spec(tmp_path, executor="docker", imports=["os", "time"])
+    (tmp_path / "cand").mkdir()
+    (tmp_path / "cand" / "adapter.py").write_text(sleeping_adapter(Path("/tmp/check.pid")))
+    started = time.monotonic()
+    report = validate(spec, tmp_path / "cand", timeout=3)
+    assert report["category"] == "validation_timeout"
+    assert time.monotonic() - started < 30
+
+    executor = DockerExecutor()
+    threading.Timer(3, executor.cancel).start()
+    report = validate(spec, tmp_path / "cand", executor)
+    assert report["category"] == "validation_crashed"  # killed, so no report was written
+    leftover = docker.from_env().containers.list(all=True, filters={"label": "harness.onboard"})
+    assert leftover == []

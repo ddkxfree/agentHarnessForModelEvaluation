@@ -12,7 +12,7 @@
 - **模型裁判**：rubric 与 A/B 双序比较、多裁判分歧记录、裁判调用独立归档、离线重解析和人工标签一致率入口。
 - **自动接入工作流**：Agent 规划、生成候选 adapter、独立检查、接收诊断并修复，导出待人工评审的 diff。
 
-功能实现、模拟测试和真实实验分别验收。阶段六 J1／J2 补修已通过本轮回归；阶段八发现执行隔离、字段映射验收和总时限问题，仍待补修，见 [本轮评审](docs/progress/27-onboarding-review.md)。真实 TB／SWE Solver 对照、消融、裁判校准和自动接入仍待验证。
+功能实现、模拟测试和真实实验分别验收。阶段六 J1／J2 补修已通过本轮回归；阶段八评审发现的执行隔离、字段映射验收和总时限问题（[27](docs/progress/27-onboarding-review.md)）已补修，待复评，见 [28](docs/progress/28-onboarding-review-fixes.md)。真实 TB／SWE Solver 对照、消融、裁判校准和自动接入仍待验证。
 
 阅读入口：[上手练习](docs/hands-on.md)、[进度索引](docs/progress/README.md)、[路线图](docs/roadmap.md)、[后续阶段解释](docs/next-stages.md)、[本地试跑与并行开发](docs/post-ten-plan.md)。上手文档中的旧仓库／分支命令仍需修订；在已有项目目录使用下面的命令。
 
@@ -78,13 +78,13 @@ harness report runs/<run_id>                                      # 失败样本
 harness run -c configs/judge-open-qa.yaml                          # 需要配置被评模型和裁判的 API key
 harness judge-agreement runs/<run_id> --labels labels.jsonl        # 独立标签校准
 harness rescore runs/<run_id> -p open-qa.disagreement_threshold=0.5 # 纯后处理离线重评
-harness onboard -c configs/onboard-world-capitals.yaml -m <provider/model>
+harness onboard -c configs/onboard-world-capitals.yaml -m <provider/model>   # 候选代码在容器中验证，需要 Docker
 harness onboard-verify runs/onboard/<attempt>                      # 不调用模型，重验候选实现
 ```
 
 `-p task.key=value` 的值按 YAML 解析，例如 `-p mmlu.subjects=[anatomy,virology]`。
 
-`compare --resume` 会重新执行工具与评分，模型请求可从缓存回放。报告区分分数与性能的可比性。Judge 更换 rubric／实际提示词／裁判模型需要新调用，`rescore` 只重解析或重聚合已保存原文。当前 onboarding 默认在宿主子进程执行候选代码，尚未满足隔离验收；具体复现与补修要求见本轮评审。
+`compare --resume` 会重新执行工具与评分，模型请求可从缓存回放。报告区分分数与性能的可比性。Judge 更换 rubric／实际提示词／裁判模型需要新调用，`rescore` 只重解析或重聚合已保存原文。onboarding 默认在无网络、只读根文件系统、只有临时验证目录可写的容器中执行候选代码，Docker 不可用时记为环境故障，不会退回宿主进程；`--executor subprocess` 没有文件系统隔离，只用于可信的脚本化候选。
 
 ## 架构
 
@@ -201,7 +201,7 @@ uv run ruff check . && uv run ruff format --check .
 
 2026-10-25 在 `f3aebaf` 上本机复核为 **323 passed、18 skipped**，静态检查通过；开发方完整环境记录为 358 passed，未在本机独立复核。通过数与跳过数受可选依赖、Docker 和任务资源影响，具体见进度记录。
 
-单元测试用 MockModel、冻结本地数据和假沙箱，不需要网络或密钥；onboarding 测试还运行真实验证子进程。Docker 集成测试需要 daemon、镜像和题目资源，不可用时跳过；可选依赖缺失只跳过相应测试。
+单元测试用 MockModel、冻结本地数据和假沙箱，不需要网络或密钥；onboarding 测试用子进程验证可信的脚本化候选，容器隔离用例需要 Docker。Docker 集成测试需要 daemon、镜像和题目资源，不可用时跳过；可选依赖缺失只跳过相应测试。
 
 ## 路线图
 

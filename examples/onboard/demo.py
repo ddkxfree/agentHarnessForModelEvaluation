@@ -4,8 +4,9 @@
 
 The scripted "agent" plans, writes an adapter that reads a wrong column, receives the
 validator's diagnosis and writes the fixed adapter. Everything else is the real workflow:
-spec pinning, the candidate workspace, independent validation in a subprocess, archive and
-diff. It shows the plumbing, not what a real model can do.
+spec pinning, the candidate workspace, independent validation, archive and diff. It shows the
+plumbing, not what a real model can do. The scripted candidate is trusted, so it is validated
+in a host subprocess; real model candidates are validated in a container (the default).
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ def main() -> None:
     spec = spec.model_copy(
         update={
             "source": ROOT / spec.source,
+            "executor": "subprocess",
             "output_dir": Path(sys.argv[1]) if len(sys.argv) > 1 else Path("runs/onboard-demo"),
         }
     )
