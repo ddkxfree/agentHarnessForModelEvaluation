@@ -42,6 +42,7 @@ from harness.judge.common import extract_json
 from harness.onboard.check import PROTECTED_VIOLATION
 from harness.onboard.spec import CANDIDATE_FILES, OnboardSpec, source_fingerprint
 from harness.onboard.validator import (
+    CANCELLED,
     ENV_ERROR,
     SOURCE_CHANGED,
     VALIDATOR_VERSION,
@@ -60,7 +61,6 @@ REPLY_FORMAT_VERSION = "onboard_reply_v1"
 GENERATION_FAILED = "generation_failed"
 BUDGET_EXHAUSTED = "budget_exhausted"
 NEEDS_HUMAN = "needs_human"
-CANCELLED = "cancelled"
 
 SYSTEM_PROMPT = """\
 You add a new evaluation task to a Python evaluation harness. You write the adapter that turns
@@ -401,7 +401,7 @@ class OnboardAgent:
                 raise self._out_of_time(f"validation of round {n}")
             if report["passed"]:
                 return
-            if report["category"] in (ENV_ERROR, SOURCE_CHANGED):
+            if report["category"] in (ENV_ERROR, SOURCE_CHANGED, CANCELLED):
                 # not the candidate's fault: nothing for the agent to fix
                 raise StopAttempt(report["category"], report["category"], report.get("detail", ""))
             if report["category"] == PROTECTED_VIOLATION:

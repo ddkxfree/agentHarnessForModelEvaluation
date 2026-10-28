@@ -41,6 +41,7 @@ VALIDATOR_VERSION = f"onboard_validator_v2+{CHECKER_VERSION}"
 ENV_ERROR = "env_error"
 VALIDATION_TIMEOUT = "validation_timeout"
 VALIDATION_CRASHED = "validation_crashed"
+CANCELLED = "cancelled"
 SOURCE_CHANGED = "source_changed"
 
 
@@ -50,6 +51,12 @@ class ExecResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    cancelled: bool = False
+
+
+def _stopped(cancelled: bool, what: str) -> ExecResult:
+    reason = "cancelled" if cancelled else "out of time"
+    return ExecResult(-1, "", f"{what}: {reason}", timed_out=not cancelled, cancelled=cancelled)
 
 
 class Executor(Protocol):
@@ -58,7 +65,7 @@ class Executor(Protocol):
     ``argv[0]`` is ``python``; the other paths are relative to ``workdir``, which is the only
     directory the command may write. ``run`` raises SandboxError when it cannot run at all, and
     kills everything it started when ``timeout`` passes or ``cancel`` is called. A cancelled
-    executor kills whatever it starts afterwards too.
+    executor starts nothing more: ``prepare`` raises and ``run`` returns ``cancelled``.
     """
 
     def prepare(self, timeout: float) -> dict[str, Any]:
@@ -106,22 +113,24 @@ class SubprocessExecutor:
 
     def run(self, argv: list[str], *, workdir: Path, timeout: float) -> ExecResult:
         argv = [sys.executable if a == "python" and i == 0 else a for i, a in enumerate(argv)]
-        try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=workdir,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=_clean_env(workdir),
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise SandboxError(f"cannot start {argv[0]}: {exc}") from exc
+        # starting and registering under the lock cancel() takes: either it sees the process,
+        # or the process is never started
         with self._lock:
-            self._live.add(proc)
             if self._cancelled:
-                self._kill(proc)
+                return _stopped(True, "not started")
+            try:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=workdir,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=_clean_env(workdir),
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                raise SandboxError(f"cannot start {argv[0]}: {exc}") from exc
+            self._live.add(proc)
         try:
             out, err = proc.communicate(timeout=max(timeout, 0.001))
         except subprocess.TimeoutExpired:
@@ -131,6 +140,8 @@ class SubprocessExecutor:
         finally:
             with self._lock:
                 self._live.discard(proc)
+        if self._cancelled:
+            return ExecResult(proc.returncode, _text(out), _text(err), cancelled=True)
         return ExecResult(proc.returncode, _text(out), _text(err))
 
     @staticmethod
@@ -163,7 +174,11 @@ SANDBOX_PACKAGES = ("pydantic", "numpy", "pytest")
 
 
 class PrepareTimeout(SandboxError):
-    """The executor could not get ready in the time it was given."""
+    """The executor could not get ready in the time it was given, or was cancelled."""
+
+    def __init__(self, message: str, cancelled: bool = False) -> None:
+        super().__init__(message)
+        self.cancelled = cancelled
 
 
 class _GaveUp(Exception):
@@ -239,7 +254,11 @@ class DockerExecutor:
 
     def _bounded(self, fn: Any, timeout: float, on_late: Any = None) -> Any:
         """``fn()`` in a helper thread, given up at ``timeout`` or on cancel (``_GaveUp``).
-        A value that arrives after giving up is passed to ``on_late``."""
+        Cancellation is checked before ``fn`` starts and again when its result is ready, so a
+        fast result never slips past it. A value that is not used, because it arrived after
+        giving up or after a cancel, is passed to ``on_late``."""
+        if self._cancel.is_set():
+            raise _GaveUp(True)
         box: dict[str, Any] = {}
         done = threading.Event()
         gate = threading.Lock()
@@ -265,11 +284,17 @@ class DockerExecutor:
                         raise _GaveUp(self._cancel.is_set())
         if "error" in box:
             raise box["error"]
+        if self._cancel.is_set():
+            if on_late is not None:
+                on_late(box["value"])
+            raise _GaveUp(True)
         return box["value"]
 
     def prepare(self, timeout: float) -> dict[str, Any]:
         """Find or build the checker image within ``timeout`` seconds; raises PrepareTimeout
         when out of time or cancelled, SandboxError when Docker cannot do it."""
+        if self._cancel.is_set():
+            raise PrepareTimeout(f"preparing {self.tag()} was cancelled", cancelled=True)
         if self._image is not None:
             return {**self._image, "built": False, "prepare_s": 0.0}
         import docker
@@ -293,7 +318,8 @@ class DockerExecutor:
                 img = self._bounded(lambda: self.client.images.get(tag), left())
         except _GaveUp as exc:
             raise PrepareTimeout(
-                f"preparing {tag} was {exc} after {time.monotonic() - started:.1f}s"
+                f"preparing {tag} was {exc} after {time.monotonic() - started:.1f}s",
+                cancelled=exc.cancelled,
             ) from None
         except docker.errors.DockerException as exc:
             raise SandboxError(f"cannot prepare {tag}: {exc}") from exc
@@ -301,16 +327,21 @@ class DockerExecutor:
         return {**self._image, "built": built, "prepare_s": time.monotonic() - started}
 
     def _build(self, timeout: float) -> None:
-        try:
-            proc = subprocess.Popen(
-                self.build_argv(),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise SandboxError(f"cannot start the image build: {exc}") from exc
+        # under the lock cancel() takes: a cancelled executor never starts a build, and one
+        # cancelled afterwards is seen by the loop below
+        with self._lock:
+            if self._cancel.is_set():
+                raise _GaveUp(True)
+            try:
+                proc = subprocess.Popen(
+                    self.build_argv(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                raise SandboxError(f"cannot start the image build: {exc}") from exc
         end = time.monotonic() + timeout
         while True:
             try:
@@ -334,10 +365,12 @@ class DockerExecutor:
         def left() -> float:
             return max(end - time.monotonic(), 0.0)
 
+        if self._cancel.is_set():
+            return _stopped(True, "the check container was not started")
         try:
             image = self.prepare(left())["tag"]
         except PrepareTimeout as exc:
-            return ExecResult(-1, "", str(exc), timed_out=True)
+            return _stopped(exc.cancelled, str(exc))
         package = Path(harness.__file__).resolve().parent
 
         def create() -> Any:
@@ -371,10 +404,16 @@ class DockerExecutor:
         try:
             container = self._bounded(create, left(), on_late=self._remove)
         except _GaveUp as exc:
-            return ExecResult(-1, "", f"creating the check container was {exc}", timed_out=True)
+            return _stopped(exc.cancelled, "creating the check container")
         except docker.errors.DockerException as exc:
             raise SandboxError(f"cannot create the check container: {exc}") from exc
+        # Registering under the lock cancel() takes: a cancel before this point means the
+        # container is removed unstarted; one after it finds the container in _live, and a
+        # cancel that races with start() is caught when start() returns.
         with self._lock:
+            if self._cancel.is_set():
+                self._remove(container)
+                return _stopped(True, "the check container was not started")
             self._live[container.id] = container
         timed_out, code, out, err = False, -1, "", ""
         try:
@@ -392,6 +431,8 @@ class DockerExecutor:
             with self._lock:
                 self._live.pop(container.id, None)
             self._remove(container)
+        if self._cancel.is_set():
+            return ExecResult(code, out, err, cancelled=True)
         return ExecResult(code, out, err, timed_out=timed_out)
 
     @staticmethod
@@ -413,8 +454,8 @@ class DockerExecutor:
             pass
 
     def cancel(self) -> None:
-        self._cancel.set()
         with self._lock:
+            self._cancel.set()
             for container in list(self._live.values()):
                 self._kill(container)
 
@@ -543,7 +584,7 @@ def validate(
     try:
         report["preparation"] = executor.prepare(limit)
     except PrepareTimeout as exc:
-        return finish(VALIDATION_TIMEOUT, str(exc))
+        return finish(CANCELLED if exc.cancelled else VALIDATION_TIMEOUT, str(exc))
     except SandboxError as exc:
         return finish(ENV_ERROR, str(exc))
     report["executor"] = executor.describe()
@@ -590,6 +631,8 @@ def validate(
         except SandboxError as exc:
             return finish(ENV_ERROR, str(exc))
         res.stderr = scrub(res.stderr)
+        if res.cancelled:
+            return finish(CANCELLED, f"the checks were cancelled\n{_tail(res.stderr)}")
         if res.timed_out:
             return finish(
                 VALIDATION_TIMEOUT, f"checks did not finish in {limit:.1f}s\n{_tail(res.stderr)}"
@@ -633,6 +676,8 @@ def _self_test(executor: Executor, scratch: Path, scrub: Any, limit: float) -> d
         res = executor.run(argv, workdir=scratch, timeout=limit)
     except SandboxError as exc:
         return {"status": "env_error", "output": str(exc)}
+    if res.cancelled:
+        return {"status": "cancelled", "output": scrub(_tail(res.stderr))}
     if res.timed_out:
         return {"status": "timeout", "output": scrub(_tail(res.stdout))}
     return {

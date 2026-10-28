@@ -737,7 +737,7 @@ def test_docker_kills_and_removes_containers_on_timeout_and_cancel(tmp_path):
     executor = DockerExecutor()
     threading.Timer(3, executor.cancel).start()
     report = validate(spec, tmp_path / "cand", executor)
-    assert report["category"] == "validation_crashed"  # killed, so no report was written
+    assert report["category"] == "cancelled"
     leftover = docker.from_env().containers.list(all=True, filters={"label": "harness.onboard"})
     assert leftover == []
 
@@ -749,10 +749,13 @@ class FakeContainer:
     id = "fake-container"
 
     def __init__(self, start_delay: float) -> None:
-        self.start_delay, self.waited = start_delay, None
-        self.killed = self.removed = False
+        self.start_delay, self.waited, self.on_start = start_delay, None, None
+        self.killed = self.removed = self.started = False
 
     def start(self):
+        self.started = True
+        if self.on_start is not None:
+            self.on_start()
         time.sleep(self.start_delay)
 
     def wait(self, timeout):
@@ -776,6 +779,7 @@ class FakeDocker:
         self.lookups, self.present_after, self.create_delay = 0, present_after, create_delay
         self.container = FakeContainer(start_delay)
         self.images = self.containers = self
+        self.created, self.on_create = 0, None
 
     def ping(self):
         return True
@@ -789,6 +793,9 @@ class FakeDocker:
         return type("Image", (), {"id": "sha256:fake"})()
 
     def create(self, image, argv, **kwargs):
+        self.created += 1
+        if self.on_create is not None:
+            self.on_create()
         time.sleep(self.create_delay)
         return self.container
 
@@ -917,3 +924,70 @@ def test_docker_aborts_a_slow_image_build(tmp_path):
     while building() and time.monotonic() < deadline:
         time.sleep(0.2)
     assert building() == []
+
+
+# --- 11. a cancelled executor starts nothing ------------------------------------------------
+
+
+def test_a_cancelled_executor_creates_no_container(tmp_path):
+    fake = FakeDocker()
+    executor = fake_executor(fake)
+    executor.prepare(10)
+    executor.cancel()
+    res = executor.run(["python", "-V"], workdir=tmp_path, timeout=5)
+    assert res.cancelled and not res.timed_out
+    assert fake.created == 0 and not fake.container.started and fake.container.waited is None
+
+
+def test_a_cancel_while_the_container_is_created_removes_it_unstarted(tmp_path):
+    fake = FakeDocker()
+    executor = fake_executor(fake)
+    executor.prepare(10)
+    fake.on_create = executor.cancel  # the result comes back right after the cancel
+    res = executor.run(["python", "-V"], workdir=tmp_path, timeout=5)
+    assert res.cancelled
+    assert not fake.container.started and fake.container.waited is None
+    assert fake.container.removed
+
+
+def test_a_cancel_while_the_container_starts_kills_it_before_waiting(tmp_path):
+    fake = FakeDocker()
+    executor = fake_executor(fake)
+    executor.prepare(10)
+    fake.container.on_start = executor.cancel
+    res = executor.run(["python", "-V"], workdir=tmp_path, timeout=5)
+    assert res.cancelled and fake.container.waited is None
+    assert fake.container.killed and fake.container.removed
+
+
+def test_a_cancelled_executor_starts_no_image_build(tmp_path):
+    from harness.onboard.validator import PrepareTimeout
+
+    pid_file = tmp_path / "build.pid"
+    executor = fake_executor(FakeDocker(present_after=1), slow_build(pid_file))
+    executor.cancel()
+    with pytest.raises(PrepareTimeout) as err:
+        executor.prepare(10)
+    assert err.value.cancelled
+    time.sleep(0.3)
+    assert not pid_file.exists()
+
+
+def test_a_cancelled_subprocess_executor_starts_no_process(tmp_path):
+    executor = SubprocessExecutor()
+    executor.cancel()
+    marker = tmp_path / "ran"
+    res = executor.run(["python", "-c", f"open({str(marker)!r}, 'w')"], workdir=tmp_path, timeout=5)
+    assert res.cancelled and not marker.exists()
+
+
+@pytest.mark.parametrize("kind", ["docker", "subprocess"])
+def test_validating_with_a_cancelled_executor_is_reported_as_cancelled(tmp_path, kind):
+    spec = make_spec(tmp_path, executor=kind)
+    (tmp_path / "cand").mkdir()
+    (tmp_path / "cand" / "adapter.py").write_text(GOOD)
+    executor = fake_executor(FakeDocker()) if kind == "docker" else SubprocessExecutor()
+    executor.prepare(10)
+    executor.cancel()
+    report = validate(spec, tmp_path / "cand", executor)
+    assert not report["passed"] and report["category"] == "cancelled"

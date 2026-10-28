@@ -35,5 +35,6 @@
 | [29](29-onboarding-fixes-review.md) | O1 默认容器隔离已实现、Docker 实测待复核；O2 回归通过；O3 原误报成功已修，镜像准备／容器启动仍漏总时限 | 阶段 8 补修复评 |
 | [30](30-onboarding-o3a-fix.md) | 补修 O3a：镜像准备独立限时、在尝试计时前完成并记录，构建在可 kill 的子进程中；容器创建／启动／等待共用剩余时间，迟到的容器被删除；在 Docker 上复核全部隔离回归 | 阶段 8 补修 |
 | [31](31-onboarding-o3a-review.md) | O3a 时限主路径与现有回归通过；取消与创建结果交接仍可能启动容器（P2 O3b）；本机 345 passed、24 skipped | 阶段 8 补修复评 |
+| [32](32-onboarding-cancel-race-fix.md) | 补修 O3b：每次交接都在 cancel 的同一把锁下检查取消，已取消执行器不再构建、创建、启动或等待；取消单独记为 `cancelled` | 阶段 8 补修 |
 
 想在自己电脑上跑起来，见 [上手练习指南](../hands-on.md)。
