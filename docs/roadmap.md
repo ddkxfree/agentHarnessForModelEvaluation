@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+最新复评（2026-10-28，master `dd2bd3e`，PR #24）：O3b 原两条取消竞态复现已阻止，补修范围内未发现新的阻塞项，可进入实际试跑。本机 352 passed、24 skipped，静态检查通过；本会话 Docker 用例跳过、真实模型接入未执行。最小工作流代码补修与真实实验分别验收，详见 [33](progress/33-stage8-acceptance-and-first-run.md)。下列状态为历史记录。
+
 阶段八 O3b 补修（2026-10-27，基于 master `c6e0219`）：取消在每次交接时于同一把锁下检查，已取消执行器不再构建、创建、启动或等待；取消单独记为 `cancelled`。新增确定性回归不依赖 Docker；393 passed，静态检查通过，待复评。真实模型接入仍待验证。详见 [32](progress/32-onboarding-cancel-race-fix.md)。
 
 最新复评（2026-10-27，master `ff27973`，PR #23）：镜像准备独立限时、容器创建／启动与剩余时间扣减的现有回归通过；取消与创建结果交接仍有竞态，已取消后可能启动候选容器（P2 O3b）。本机 345 passed、24 skipped，静态检查通过；本会话 Docker 不可连接、真实模型接入未执行。详见 [31](progress/31-onboarding-o3a-review.md)。下列状态为历史记录。
