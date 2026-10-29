@@ -37,5 +37,9 @@
 | [31](31-onboarding-o3a-review.md) | O3a 时限主路径与现有回归通过；取消与创建结果交接仍可能启动容器（P2 O3b）；本机 345 passed、24 skipped | 阶段 8 补修复评 |
 | [32](32-onboarding-cancel-race-fix.md) | 补修 O3b：每次交接都在 cancel 的同一把锁下检查取消，已取消执行器不再构建、创建、启动或等待；取消单独记为 `cancelled` | 阶段 8 补修 |
 | [33](33-stage8-acceptance-and-first-run.md) | O3b 原复现已阻止；本机 352 passed、24 skipped，进入环境检查、Oracle、真实小运行与实验验收；补齐遗漏的第 32 轮简要记录 | 阶段 8 复评与试运行 |
+| [34](34-first-run-plan-and-environment.md) | 制定模型／Agent 到 TB、SWE、JobBench 的路线；Docker 已启动，基础镜像拉取未完成，Oracle／no-op 尚未验收，无真实模型调用 | 实际试运行 |
+| [35](35-docker-proxy-and-oracle.md) | Docker 配置 7897 代理、Python 官方镜像拉取与运行成功；三个自建任务参考解全过、不操作全失败，2 个 Docker 测试通过，无遗留评测容器 | 首次无模型环境验收通过 |
+| [36](36-stage11-20-design.md) | 阶段 11～20 设计：诊断、回归、故障注入、Docker SRE、任务生成与受控优化的分批开发；Cursor 启动提示词与到期前收口范围；仅文档设计 | 后续研究能力与平台扩展计划 |
+| [37](37-readable-cli-summary.md) | run／show 改为中英文两列汇总，非零异常自动显示，--all-outcomes 展开零计数；窄终端完整换行 | 终端操作体验 |
 
-想在自己电脑上跑起来，见 [上手练习指南](../hands-on.md)。
+想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。

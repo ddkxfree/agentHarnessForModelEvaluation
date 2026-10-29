@@ -16,6 +16,8 @@
 
 阅读入口：[上手练习](docs/hands-on.md)、[进度索引](docs/progress/README.md)、[路线图](docs/roadmap.md)、[后续阶段解释](docs/next-stages.md)、[本地试跑与并行开发](docs/post-ten-plan.md)。上手文档中的旧仓库／分支命令仍需修订；在已有项目目录使用下面的命令。
 
+从模型问答到工具 Agent，再到 TB、SWE 和 JobBench 的逐步练习见 [实际运行计划](docs/first-run-plan.md)。JobBench 尚未接入；第一轮先做无模型的环境与 Oracle 检查。
+
 ## 快速开始
 
 ```bash
@@ -63,7 +65,8 @@ harness list-tasks                                   # 列出已注册的评测�
 harness run -c configs/example.yaml                  # 按配置文件运行
 harness run -m ollama/qwen2.5:0.5b-instruct -t gsm8k --limit 20 \
     -p gsm8k.n_shot=3 --temperature 0 --seed 0       # 命令行参数覆盖配置
-harness show runs/<run_id>                           # 汇总、抽取方式分布、Agent 统计
+harness show runs/<run_id>                           # 中英文两列汇总、抽取方式分布、Agent 统计
+harness show runs/<run_id> --all-outcomes            # 展开全部结果类型，包含零计数
 harness show runs/<run_id> -t gsm8k --outcome extract_failed -n 5   # 查看某类失败样本
 harness show runs/<run_id> --sample terminal/count-errors           # 某道题的完整 Agent 轨迹
 harness rescore runs/<run_id>                        # 改了打分逻辑后，不调模型直接重打分

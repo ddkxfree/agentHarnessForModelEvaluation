@@ -23,6 +23,14 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+终端操作体验（2026-10-29）：run／show 汇总改为中英文两列布局，长字段换行，非零异常自动显示；show --all-outcomes 可展开全部零计数类型。历史单题记录已验证显示，本机 352 passed、24 skipped，静态检查通过；本轮无新模型调用，见 [37](progress/37-readable-cli-summary.md)。
+
+后续设计更新（2026-10-28）：新增 [阶段 11～20 开发计划](stage11-20-plan.md)，按 13 诊断 → 18 回归 → 16 故障注入 → 19 Docker SRE → 11 任务候选生成 → 12 受控优化推进；含 Cursor 分批交接、验收与十一月中旬前建议窗口。此轮仅完成设计，未实现新功能，未新增运行验收；14／15／17／K8s 与公开榜保留后续范围。见 [36](progress/36-stage11-20-design.md)。
+
+首次环境验收更新（2026-10-28）：Docker Desktop 已手动配置 HTTP／HTTPS 代理 `http://127.0.0.1:7897`，Python 3.12 slim 官方镜像拉取与运行成功（linux/arm64）；三个自建任务参考解 3/3 通过、不操作 3/3 失败，两个真实 Docker 集成测试通过，无遗留评测容器。没有调用真实模型；TB／SWE／onboarding 的其他运行验收不在本轮范围。详见 [35](progress/35-docker-proxy-and-oracle.md)。下列首次下载失败为历史记录。
+
+首次实际试跑（2026-10-28）：用户选择无模型环境／Oracle 检查。首次三题因 Docker 未连通均 env_error；用户启动后已确认 Docker 29.3.1，但基础镜像 python:3.12-slim 拉取数分钟仍未完成，重跑在准备阶段结束，Oracle／no-op 尚未验收。下一步先解决镜像下载，后续按 [逐步运行计划](first-run-plan.md) 推进，见 [34](progress/34-first-run-plan-and-environment.md)。JobBench 尚未接入，不影响代码补修复评结论。
+
 最新复评（2026-10-28，master `dd2bd3e`，PR #24）：O3b 原两条取消竞态复现已阻止，补修范围内未发现新的阻塞项，可进入实际试跑。本机 352 passed、24 skipped，静态检查通过；本会话 Docker 用例跳过、真实模型接入未执行。最小工作流代码补修与真实实验分别验收，详见 [33](progress/33-stage8-acceptance-and-first-run.md)。下列状态为历史记录。
 
 阶段八 O3b 补修（2026-10-27，基于 master `c6e0219`）：取消在每次交接时于同一把锁下检查，已取消执行器不再构建、创建、启动或等待；取消单独记为 `cancelled`。新增确定性回归不依赖 Docker；393 passed，静态检查通过，待复评。真实模型接入仍待验证。详见 [32](progress/32-onboarding-cancel-race-fix.md)。

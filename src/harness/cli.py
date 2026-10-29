@@ -30,20 +30,43 @@ def _parse_params(items: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _summary_table(results: dict[str, dict[str, Any]], title: str) -> Table:
+OUTCOME_LABELS = {
+    Outcome.CORRECT: "通过",
+    Outcome.WRONG: "未通过",
+    Outcome.EXTRACT_FAILED: "答案抽取失败",
+    Outcome.TRUNCATED: "输出被截断",
+    Outcome.STEP_LIMIT: "达到步数上限",
+    Outcome.TIME_LIMIT: "达到时间上限",
+    Outcome.TOKEN_LIMIT: "达到 token 上限",
+    Outcome.API_ERROR: "模型 API 错误",
+    Outcome.SOLVER_ERROR: "求解器错误",
+    Outcome.SCORER_ERROR: "评分器错误",
+    Outcome.JUDGE_ERROR: "裁判错误",
+    Outcome.ENV_ERROR: "环境错误",
+}
+
+
+def _summary_table(
+    results: dict[str, dict[str, Any]], title: str, *, all_outcomes: bool = False
+) -> Table:
     table = Table(title=title)
-    for col in ["task", "n", "accuracy", "95% CI", *[o.value for o in Outcome], "cached"]:
-        table.add_column(col, justify="left" if col == "task" else "right")
+    table.add_column("指标", overflow="fold")
+    table.add_column("结果", overflow="fold")
     for name, s in results.items():
         lo, hi = s["ci95"]
-        table.add_row(
-            name,
-            str(s["n"]),
-            f"{s['accuracy']:.3f}",
-            f"[{lo:.3f}, {hi:.3f}]",
-            *[str(s["outcomes"][o.value]) for o in Outcome],
-            str(s["cached"]),
-        )
+        if table.row_count:
+            table.add_section()
+        table.add_row("任务 (task)", name)
+        table.add_row("样本数 (n)", str(s["n"]))
+        table.add_row("准确率 (accuracy)", f"{s['accuracy']:.3f}")
+        table.add_row("95% 置信区间 (CI)", f"[{lo:.3f}, {hi:.3f}]")
+        for outcome in Outcome:
+            count = s["outcomes"][outcome.value]
+            if all_outcomes or count or outcome in (Outcome.CORRECT, Outcome.WRONG):
+                table.add_row(f"{OUTCOME_LABELS[outcome]} ({outcome.value})", str(count))
+        table.add_row("缓存命中 (cached)", str(s["cached"]))
+    if not all_outcomes:
+        table.caption = "未列出的结果类型均为 0；show --all-outcomes 可查看全部类型。"
     return table
 
 
@@ -213,13 +236,18 @@ def show(
     outcome: Annotated[str | None, typer.Option(help="Only show samples with this outcome")] = None,
     sample: Annotated[str | None, typer.Option(help="Show one sample by id, in full")] = None,
     n: Annotated[int, typer.Option("-n", help="Number of samples to print")] = 5,
+    all_outcomes: Annotated[
+        bool, typer.Option("--all-outcomes", help="Show all outcome types, including zero counts")
+    ] = False,
 ) -> None:
     """Print a run's summary and example samples, e.g. all extract_failed cases.
 
     Agent samples are printed with their full trajectory of tool calls and observations.
     """
     manifest = read_json(run_dir / "manifest.json")
-    console.print(_summary_table(manifest["results"], manifest["run_id"]))
+    console.print(
+        _summary_table(manifest["results"], manifest["run_id"], all_outcomes=all_outcomes)
+    )
 
     for name, s in manifest["results"].items():
         console.print(f"[bold]{name}[/] extraction methods: {s['extraction_methods']}")
