@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -540,3 +541,257 @@ def test_untrusted_text_is_shown_without_control_sequences(tmp_path):
     assert "\x1b" not in out.output and "\x07" not in out.output
     CliRunner().invoke(app, ["report", str(run)])
     assert "\x1b" not in (run / "report.md").read_text()
+
+
+# --- G3/G4: supervised process, status, cancel, resume ------------------------------------
+
+
+@pytest.fixture
+def harbor_env(tmp_path, monkeypatch):
+    """A config with a local task, a fake harbor and docker; returns a setter for the mode."""
+    import harbor_fakes
+
+    from harness.core.fingerprint import fingerprint_dir
+    from harness.integrations.harbor import process as hp
+
+    task = tmp_path / "proj" / "tasks" / "t1"
+    task.mkdir(parents=True)
+    (task / "task.toml").write_text("[agent]\ntimeout_sec = 10\n")
+    exe, bin_dir = harbor_fakes.install(tmp_path, "ok")
+    monkeypatch.setattr(hp, "DOCKER", str(bin_dir / "docker"))
+    monkeypatch.setattr(hp, "GRACE_S", 2.0)
+    monkeypatch.setattr(hp, "SETTLE_S", 0.0)
+    monkeypatch.setenv("HARNESS_HARBOR_BIN", str(exe))
+    (tmp_path / "proj" / "pyproject.toml").write_text("")
+    cfg = tmp_path / "proj" / "h.yaml"
+    raw = {
+        "schema_version": 1,
+        "task": {"path": "tasks/t1", "fingerprint": fingerprint_dir(task)},
+        "agent": {"name": "terminus-2", "model": "m/x", "env": ["SOME_KEY"]},
+        "limits": {"wall_clock_s": 30},
+        "output_dir": "out",
+    }
+    cfg.write_text(yaml.safe_dump(raw))
+    monkeypatch.setenv("SOME_KEY", "the-secret-value-123")
+
+    def setup(mode="ok", **limits):
+        (bin_dir / "mode").write_text(mode)
+        if limits:
+            cfg.write_text(yaml.safe_dump({**raw, "limits": {**raw["limits"], **limits}}))
+        return cfg
+
+    setup.bin = bin_dir
+    setup.out = tmp_path / "proj" / "out"
+    return setup
+
+
+def start(cfg_path: Path, **kw):
+    from harness.integrations.harbor import process as hp
+
+    cfg, root = hc.load_config(cfg_path)
+    run_dir = hp.prepare(cfg, root, cfg_path)
+    receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+    env = {**hr.base_env(), **hp.agent_env(cfg)}
+    kw.setdefault("poll_s", 0.05)
+    return run_dir, hp.supervise(run_dir, receipt["argv"], env,
+                                 wall_clock_s=cfg.limits.wall_clock_s, **kw)  # fmt: skip
+
+
+def test_run_records_receipt_state_and_trials_without_secrets(harbor_env):
+    from harness.results import open_run
+
+    run_dir, state = start(harbor_env())
+    assert state["status"] == "completed" and state["exit_code"] == 0 and state["imported"]
+    receipt = json.loads((run_dir / "run.json").read_text())
+    assert receipt["argv"][1:3] == ["run", "--path"] and "--print-config" not in receipt["argv"]
+    assert receipt["agent_env_names"] == ["SOME_KEY"]
+    assert receipt["resolved_job_config"]["agent"]["kwargs"]["api_key"] == "[REDACTED]"
+    for name in ("run.json", "state.json", "harbor_run.json", "trials.jsonl", "harbor.log"):
+        assert "the-secret-value-123" not in (run_dir / name).read_text(), name
+    assert (harbor_env.bin / "secret_seen").read_text() == "the-secret-value-123"
+    calls = [json.loads(x) for x in (harbor_env.bin / "calls.jsonl").read_text().splitlines()]
+    assert all("the-secret-value-123" not in json.dumps(c["argv"]) for c in calls)
+    view = open_run(run_dir)
+    assert view.backend == "harbor" and view.outcomes() == {"wrong": 1}
+    assert view.status == "completed"
+    record = json.loads((run_dir / "harbor_run.json").read_text())
+    assert record["raw"]["copied"] is False and record["state"]["exit_code"] == 0
+    assert importer_verify(run_dir) == []
+
+
+def importer_verify(run_dir):
+    return hi.verify_snapshot(run_dir)
+
+
+def test_exit_code_zero_is_not_success_per_trial(harbor_env):
+    """A zero exit code with a failed trial is a completed job with a wrong trial."""
+    _, state = start(harbor_env("ok"))
+    assert state["status"] == "completed"
+    from harness.results import open_run
+
+    assert open_run(_).accuracy()["n_correct"] == 0
+
+
+def test_failed_start_and_partial_exit_keep_what_exists(harbor_env):
+    run_dir, state = start(harbor_env("crash_before_job"))
+    assert state["status"] == "failed" and state["exit_code"] == 2
+    assert state["imported"] is False and "no job" in state["import_error"]
+    assert "boom" in (run_dir / "harbor.log").read_text()
+    run_dir, state = start(harbor_env("partial_exit1"))
+    assert state["status"] == "failed" and state["exit_code"] == 1 and state["imported"]
+    record = json.loads((run_dir / "harbor_run.json").read_text())
+    assert record["job"]["status"] == "incomplete" and record["job"]["outcomes"] == {"wrong": 1}
+
+
+def test_unsupported_settings_are_refused_before_start(harbor_env):
+    cfg_path = harbor_env()
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["limits"]["token_limit"] = 1000
+    cfg_path.write_text(yaml.safe_dump(raw))
+    out = CliRunner().invoke(app, ["harbor", "run", "-c", str(cfg_path)])
+    assert out.exit_code == 1 and "not started" in out.output
+    assert not harbor_env.out.exists()
+
+
+def test_missing_agent_key_is_refused_before_start(harbor_env, monkeypatch):
+    monkeypatch.delenv("SOME_KEY")
+    out = CliRunner().invoke(app, ["harbor", "run", "-c", str(harbor_env())])
+    assert out.exit_code == 1 and "SOME_KEY" in out.output
+    assert (
+        not (harbor_env.bin / "calls.jsonl").exists()
+        or "run" not in (harbor_env.bin / "calls.jsonl").read_text()
+    )
+
+
+def test_wall_clock_stops_the_group_and_removes_only_this_jobs_containers(harbor_env):
+    run_dir, state = start(harbor_env("hang", wall_clock_s=1))
+    assert state["status"] == "timed_out" and state["stop_reason"] == "timed_out"
+    assert (harbor_env.bin / "got_sigterm").exists()
+    cleanup = state["runs"][-1]["cleanup"]
+    assert [c["project"] for c in cleanup["containers"]] == ["fix-git__bu66ku2__env"]
+    assert cleanup["leftover"] == []
+    assert (harbor_env.bin / "containers").read_text() == "c-unrelated other-job__xyz__env\n"
+    assert (harbor_env.bin / "networks").read_text() == "n-unrelated other-job__xyz__env_default\n"
+    from harness.results import open_run
+
+    view = open_run(run_dir)
+    assert view.status == "timed_out" and view.outcomes() == {"running": 1}
+
+
+def test_a_process_that_ignores_sigterm_is_killed(harbor_env):
+    _, state = start(harbor_env("hang_ignore_term", wall_clock_s=1))
+    assert state["status"] == "timed_out" and state["exit_code"] == -9
+    assert state["runs"][-1]["stop"] == "killed after grace period"
+
+
+def test_cancel_from_another_process_reaches_the_supervisor(harbor_env):
+    import threading
+
+    from harness.integrations.harbor import process as hp
+
+    cfg_path = harbor_env("hang")
+    # signal handlers can only be installed from the main thread, so the canceller (another
+    # harness process in real use) runs in a thread and the supervisor here
+    run_dir_holder = {}
+
+    def canceller():
+        for _ in range(200):
+            dirs = list(harbor_env.out.glob("*/state.json"))
+            if dirs and json.loads(dirs[0].read_text()).get("status") == "running":
+                run_dir_holder["dir"] = dirs[0].parent
+                break
+            time.sleep(0.05)
+        run_dir_holder["cancel"] = hp.cancel(run_dir_holder["dir"], wait_s=20)
+
+    t = threading.Thread(target=canceller)
+    t.start()
+    run_dir, state = start(cfg_path)
+    t.join(30)
+    assert state["status"] == "cancelled" and state["stop_reason"] == "cancelled"
+    assert run_dir_holder["cancel"]["cancel"] == "stopped by supervisor"
+    assert hp.status(run_dir)["status"] == "cancelled"
+    assert (harbor_env.bin / "containers").read_text() == "c-unrelated other-job__xyz__env\n"
+
+
+def test_resume_is_exclusive_and_does_not_double_count(harbor_env):
+    from harness.integrations.harbor import process as hp
+    from harness.results import open_run
+
+    run_dir, state = start(harbor_env("hang", wall_clock_s=1))
+    assert state["status"] == "timed_out"
+    with hp.run_lock(run_dir):
+        out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+        assert out.exit_code == 1
+        assert "supervised by another harness process" in " ".join(out.output.split())
+    assert [r["kind"] for r in hp.read_state(run_dir)["runs"]] == ["run"]
+    out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+    assert out.exit_code == 0, out.output
+    state = hp.read_state(run_dir)
+    assert [r["kind"] for r in state["runs"]] == ["run", "resume"]
+    assert state["runs"][1]["argv"][1:4] == ["job", "resume", "-p"]
+    view = open_run(run_dir)
+    assert len(view.samples) == 1 and view.status == "completed"
+    out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+    assert out.exit_code == 1 and "completed" in out.output
+
+
+def _spawn_orphan():
+    import subprocess
+    import sys
+
+    return subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+
+
+def _fake_orphaned_run(harbor_env, proc, start_ticks=None):
+    from harness.integrations.harbor import process as hp
+
+    cfg, root = hc.load_config(harbor_env())
+    run_dir = hp.prepare(cfg, root, harbor_env())
+    ident = hp.process_identity(proc.pid)
+    ident["pgid"] = proc.pid
+    if start_ticks is not None:
+        ident["start_ticks"] = start_ticks
+    (run_dir / hp.PROCESS).write_text(json.dumps(ident))
+    hp._update_state(run_dir, status="running")
+    return run_dir
+
+
+def test_status_and_cancel_of_an_orphaned_harbor_process(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    proc = _spawn_orphan()
+    try:
+        run_dir = _fake_orphaned_run(harbor_env, proc)
+        st = hp.status(run_dir)
+        assert st["status"] == "orphaned" and st["harbor_process_alive"]
+        res = hp.cancel(run_dir, wait_s=1)
+        assert res["status"] == "cancelled" and res["cancel"] in (
+            "terminated",
+            "killed after grace period",
+        )
+        assert proc.wait(timeout=10) is not None
+        assert hp.status(run_dir)["status"] == "cancelled"
+    finally:
+        proc.kill()
+
+
+def test_a_reused_pid_is_never_signalled(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    proc = _spawn_orphan()
+    try:
+        run_dir = _fake_orphaned_run(harbor_env, proc, start_ticks=1)
+        assert hp.status(run_dir)["status"] == "interrupted"
+        res = hp.cancel(run_dir, wait_s=1)
+        assert "not signalled" in res["cancel"]
+        assert proc.poll() is None  # still running: not ours to stop
+    finally:
+        proc.kill()
+
+
+def test_status_command_shows_state(harbor_env):
+    run_dir, _ = start(harbor_env())
+    out = CliRunner().invoke(app, ["harbor", "status", str(run_dir)])
+    assert out.exit_code == 0 and '"status": "completed"' in out.output

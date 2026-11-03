@@ -188,3 +188,119 @@ def diff_any(run_a: Path, run_b: Path, *, show_ids: int) -> None:
     )
     for key, (oa, ob) in list(d["flips"].items())[:show_ids]:
         _say(f"  {key}: {oa} -> {ob}")
+
+
+def _print_final(run_dir: Path, state: dict) -> None:
+    _say(f"status: {state.get('status')} (stop reason {state.get('stop_reason')}, "
+         f"Harbor exit code {state.get('exit_code')})")  # fmt: skip
+    last = (state.get("runs") or [{}])[-1]
+    cleanup = last.get("cleanup") or {}
+    if cleanup:
+        late = cleanup.get("late") or {}
+        removed = len(cleanup.get("containers", [])) + len(late.get("containers", []))
+        errors = cleanup.get("errors", []) + late.get("errors", [])
+        _say(f"cleanup: {removed} container(s) of this job removed, "
+             f"leftover {cleanup.get('leftover')}, errors {errors}")  # fmt: skip
+    if state.get("imported"):
+        from harness.results import open_run
+
+        view = open_run(run_dir)
+        _say(f"trials: {len(view.samples)}, outcomes {view.outcomes()}, "
+             f"usage reported {view.usage()['coverage']}")  # fmt: skip
+    elif state.get("import_error"):
+        _say(f"no trial records: {state['import_error']}")
+    _say(f"run directory: {run_dir}")
+
+
+@harbor_app.command()
+def run(
+    config: Annotated[Path, typer.Option("--config", "-c", help="Harbor run config")],
+) -> None:
+    """Run a Harbor job in the foreground as a separate, supervised process."""
+    from harness.integrations.harbor import process as hp
+    from harness.integrations.harbor.config import load_config
+    from harness.integrations.harbor.runtime import HarborError
+
+    try:
+        cfg, root = load_config(config)
+        run_dir = hp.prepare(cfg, root, config)
+    except (HarborError, hp.HarborRunError, ValueError, OSError) as exc:
+        _say(f"not started: {exc}")
+        raise typer.Exit(1) from None
+    import json
+
+    receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+    _say(f"backend harbor {receipt['harbor']['version']} ({receipt['harbor']['executable']})")
+    _say(f"task {receipt['task']['source']} fingerprint {receipt['task']['fingerprint']}")
+    _say(f"agent {cfg.agent.name} model {cfg.agent.model or '-'}; attempts {cfg.attempts}, "
+         f"concurrency {cfg.concurrency}, retries {cfg.max_retries}")  # fmt: skip
+    _say(
+        f"wall clock {cfg.limits.wall_clock_s:.0f}s; "
+        f"Harbor job directory {run_dir / receipt['job_dir']}"
+    )
+    env = {**hp.base_env(), **hp.agent_env(cfg)}
+    state = hp.supervise(run_dir, receipt["argv"], env, wall_clock_s=cfg.limits.wall_clock_s)
+    _print_final(run_dir, state)
+    if state.get("status") != "completed":
+        raise typer.Exit(1)
+
+
+@harbor_app.command()
+def status(run_dir: Path) -> None:
+    """Lifecycle state of a Harbor run, checked against the live process."""
+    import json
+
+    from harness.integrations.harbor import process as hp
+
+    state = hp.status(run_dir)
+    shown = {k: state.get(k) for k in ("status", "stop_reason", "exit_code", "supervised",
+                                       "harbor_process_alive", "trial_dirs", "harbor_stats",
+                                       "imported", "note")}  # fmt: skip
+    _say(json.dumps(shown, indent=2))
+
+
+@harbor_app.command()
+def cancel(
+    run_dir: Path,
+    wait: Annotated[float, typer.Option(help="Seconds to wait for the supervisor")] = 120.0,
+) -> None:
+    """Stop a running Harbor job and remove this job's containers; nothing else is touched."""
+    from harness.integrations.harbor import process as hp
+
+    try:
+        state = hp.cancel(run_dir, wait_s=wait)
+    except hp.RunLocked as exc:
+        _say(str(exc))
+        raise typer.Exit(1) from None
+    _say(f"cancel: {state.get('cancel')}")
+    _print_final(run_dir, state)
+
+
+@harbor_app.command()
+def resume(run_dir: Path) -> None:
+    """Continue an interrupted or cancelled job with Harbor's own resume (completed trials are
+    kept, cancelled ones are run again)."""
+    import json
+
+    from harness.integrations.harbor import process as hp
+    from harness.integrations.harbor.config import HarborRunConfig
+    from harness.integrations.harbor.runtime import HarborError
+
+    state = hp.status(run_dir)
+    if state["status"] not in ("cancelled", "interrupted", "timed_out", "failed"):
+        _say(f"cannot resume a run that is {state['status']}")
+        raise typer.Exit(1)
+    try:
+        receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+        cfg = HarborRunConfig(**receipt["config"])
+        argv, _ = hp.resume_argv(run_dir)
+        env = {**hp.base_env(), **hp.agent_env(cfg)}
+        state = hp.supervise(
+            run_dir, argv, env, wall_clock_s=cfg.limits.wall_clock_s, kind="resume"
+        )
+    except (HarborError, hp.HarborRunError) as exc:
+        _say(f"not resumed: {exc}")
+        raise typer.Exit(1) from None
+    _print_final(run_dir, state)
+    if state.get("status") != "completed":
+        raise typer.Exit(1)
