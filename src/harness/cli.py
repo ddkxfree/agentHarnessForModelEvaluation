@@ -629,5 +629,10 @@ def compare_report(compare_dir: Path) -> None:
     _print_comparison(report)
 
 
+from harness.harbor_cli import harbor_app  # noqa: E402
+
+app.add_typer(harbor_app, name="harbor")
+
+
 if __name__ == "__main__":
     app()
