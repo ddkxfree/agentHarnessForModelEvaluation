@@ -31,6 +31,9 @@ if args == ["--version"]:
     sys.exit(0)
 if args[0] == "run":
     if "--print-config" in args:
+        if mode == "bad_config":
+            print("unknown agent", file=sys.stderr)
+            sys.exit(2)
         print(json.dumps({"job_name": opt("--job-name"),
                           "agent": {"kwargs": {"api_key": os.environ.get("SOME_KEY", "")}}}))
         sys.exit(0)

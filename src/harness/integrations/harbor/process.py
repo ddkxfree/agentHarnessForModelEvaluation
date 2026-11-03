@@ -289,6 +289,7 @@ def prepare(
         cwd=run_dir,
     )
     if resolved.returncode != 0:
+        _update_state(run_dir, status="start_failed", error=resolved.stderr[-1000:])
         raise HarborRunError(
             f"harbor --print-config failed ({resolved.returncode}): {resolved.stderr[-1000:]}"
         )

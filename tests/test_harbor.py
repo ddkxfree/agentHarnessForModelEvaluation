@@ -795,3 +795,16 @@ def test_status_command_shows_state(harbor_env):
     run_dir, _ = start(harbor_env())
     out = CliRunner().invoke(app, ["harbor", "status", str(run_dir)])
     assert out.exit_code == 0 and '"status": "completed"' in out.output
+
+
+def test_a_config_harbor_rejects_never_starts_a_job(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    out = CliRunner().invoke(app, ["harbor", "run", "-c", str(harbor_env("bad_config"))])
+    assert out.exit_code == 1 and "print-config failed" in " ".join(out.output.split())
+    (run_dir,) = harbor_env.out.iterdir()
+    assert hp.read_state(run_dir)["status"] == "start_failed"
+    assert not (run_dir / "job").exists()
+    calls = (harbor_env.bin / "calls.jsonl").read_text().splitlines()
+    assert all("--print-config" in json.loads(c)["argv"] or json.loads(c)["argv"] == ["--version"]
+               for c in calls)  # fmt: skip
