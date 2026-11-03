@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import stat
 import time
 from pathlib import Path
@@ -89,6 +91,11 @@ def write_cfg(tmp_path: Path, **over) -> Path:
         ({"limits": {"token_limit": 1000}}, "cannot be enforced"),
         ({"limits": {"cost_limit_usd": 1.0}}, "cannot be enforced"),
         ({"limits": {"max_steps": 30}}, "cannot be enforced"),
+        ({"limits": {"token_limit": 0}}, "cannot be enforced"),
+        ({"limits": {"cost_limit_usd": 0}}, "cannot be enforced"),
+        ({"limits": {"max_steps": 0}}, "cannot be enforced"),
+        ({"limits": {"cost_limit_usd": -1.0}}, "cannot be enforced"),
+        ({"environment": {"delete": False}}, "delete=false is not supported"),
         ({"agent": {"name": "x", "kwargs": {"api_key": "v"}}}, "credential"),
         ({"agent": {"name": "x", "env": ["lower"]}}, "invalid environment"),
         ({"agent": {"name": "Bad Name"}}, "invalid agent name"),
@@ -112,7 +119,7 @@ def test_argv_maps_every_field_and_paths_are_root_relative(tmp_path):
         concurrency=2,
         max_retries=1,
         limits={"timeout_multiplier": 1.5},
-        environment={"extra_docker_compose": ["configs/net.yaml"], "delete": False},
+        environment={"extra_docker_compose": ["configs/net.yaml"]},
     )
     cfg, root = hc.load_config(path)
     assert root == tmp_path.resolve()
@@ -121,7 +128,7 @@ def test_argv_maps_every_field_and_paths_are_root_relative(tmp_path):
         "/h", "run", "--path", "/task", "--agent", "terminus-2", "--model", "m/x",
         "--agent-kwarg", "a=1", "--agent-kwarg", "b=2",
         "--n-attempts", "3", "--n-concurrent", "2", "--max-retries", "1",
-        "--timeout-multiplier", "1.5", "--env", "docker", "--no-delete",
+        "--timeout-multiplier", "1.5", "--env", "docker", "--delete",
         "--extra-docker-compose", str(root / "configs" / "net.yaml"),
         "--jobs-dir", str(tmp_path / "jobs"), "--job-name", "j1", "--yes", "--quiet",
     ]  # fmt: skip
@@ -307,7 +314,41 @@ def test_running_job_and_missing_trials_are_visible(tmp_path):
     rec = hi.import_job(job, tmp_path / "out")["record"]
     assert rec["job"]["status"] == "incomplete"
     assert rec["job"]["n_total_trials"] == 2 and rec["job"]["n_missing"] == 1
-    assert rec["job"]["outcomes"] == {"running": 1}
+    assert rec["job"]["outcomes"] == {"missing": 1, "running": 1}
+    (missing,) = [
+        t for t in trials_of(tmp_path / "out" / rec["run_id"]) if t["status"] == "missing"
+    ]
+    assert missing["task_name"] == "fix-git" and missing["task_path"]
+
+
+def test_missing_planned_trials_count_against_the_score_and_are_flagged(tmp_path):
+    from harness.results import open_run
+    from harness.results.analysis import diff_views
+
+    job = job_copy(tmp_path, "oracle-verifier-offline")
+    (job / "result.json").unlink()
+    edit_json(job / "fix-git__Bu66kU2" / "result.json",
+              lambda r: r["verifier_result"].update(rewards={"reward": 1.0}))  # fmt: skip
+    edit_json(job / "lock.json", lambda lock: lock["trials"].append(lock["trials"][0]))
+    run = hi.import_job(job, tmp_path / "out")["run_dir"]
+    view = open_run(run)
+    acc = view.accuracy()
+    assert acc["n"] == 2 and acc["n_correct"] == 1 and acc["accuracy"] == 0.5
+    assert acc["accuracy_of_scored"] == 1.0
+    assert view.outcomes() == {"correct": 1, "missing": 1}
+    assert view.completeness() == {"planned": 2, "missing": 1, "unfinished": 0,
+                                   "complete": False}  # fmt: skip
+    assert len({s.key for s in view.samples}) == 2
+    r = CliRunner()
+    out = r.invoke(app, ["show", str(run)])
+    assert out.exit_code == 0 and "WARNING incomplete run: 1 of 2" in " ".join(out.output.split())
+    r.invoke(app, ["report", str(run)])
+    assert "incomplete run: 1 of 2" in (run / "report.md").read_text()
+    full = hi.import_job(job_copy(tmp_path / "f", "oracle-verifier-offline"), tmp_path / "o2")
+    d = diff_views(open_run(full["run_dir"]), view)
+    assert any(n.startswith("b: incomplete run") for n in d["notes"])
+    out = r.invoke(app, ["diff", str(full["run_dir"]), str(run)])
+    assert "incomplete run" in " ".join(out.output.split())
 
 
 def test_unknown_exception_type_stays_unknown():
@@ -464,7 +505,9 @@ def test_harbor_view_keeps_unknowns(tmp_path):
     assert view.backend == "harbor" and s.outcome == "error" and s.correct is None
     assert s.error_type == "RuntimeError" and s.error_category == "unknown"
     assert s.input_tokens is None and s.usage_status == "not_applicable"
-    assert view.accuracy() == {"n": 1, "n_scored": 0, "n_correct": 0, "accuracy": 0.0}
+    assert view.accuracy() == {
+        "n": 1, "n_scored": 0, "n_correct": 0, "accuracy": 0.0, "accuracy_of_scored": None
+    }  # fmt: skip
 
 
 def test_usage_totals_are_none_unless_every_model_sample_reported(tmp_path):
@@ -593,6 +636,11 @@ def start(cfg_path: Path, **kw):
     receipt = json.loads((run_dir / hp.RECEIPT).read_text())
     env = {**hr.base_env(), **hp.agent_env(cfg)}
     kw.setdefault("poll_s", 0.05)
+    set_limits = cfg.limits.model_fields_set
+    if "stop_grace_s" in set_limits:
+        kw.setdefault("grace_s", cfg.limits.stop_grace_s)
+    if "cleanup_s" in set_limits:
+        kw.setdefault("cleanup_s", cfg.limits.cleanup_s)
     return run_dir, hp.supervise(run_dir, receipt["argv"], env,
                                  wall_clock_s=cfg.limits.wall_clock_s, **kw)  # fmt: skip
 
@@ -606,8 +654,7 @@ def test_run_records_receipt_state_and_trials_without_secrets(harbor_env):
     assert receipt["argv"][1:3] == ["run", "--path"] and "--print-config" not in receipt["argv"]
     assert receipt["agent_env_names"] == ["SOME_KEY"]
     assert receipt["resolved_job_config"]["agent"]["kwargs"]["api_key"] == "[REDACTED]"
-    for name in ("run.json", "state.json", "harbor_run.json", "trials.jsonl", "harbor.log"):
-        assert "the-secret-value-123" not in (run_dir / name).read_text(), name
+    assert_no_secret_outside_local(run_dir)
     assert (harbor_env.bin / "secret_seen").read_text() == "the-secret-value-123"
     calls = [json.loads(x) for x in (harbor_env.bin / "calls.jsonl").read_text().splitlines()]
     assert all("the-secret-value-123" not in json.dumps(c["argv"]) for c in calls)
@@ -615,12 +662,48 @@ def test_run_records_receipt_state_and_trials_without_secrets(harbor_env):
     assert view.backend == "harbor" and view.outcomes() == {"wrong": 1}
     assert view.status == "completed"
     record = json.loads((run_dir / "harbor_run.json").read_text())
-    assert record["raw"]["copied"] is False and record["state"]["exit_code"] == 0
+    assert record["state"]["exit_code"] == 0 and record["source"]["job_dir"].startswith("local/")
     assert importer_verify(run_dir) == []
 
 
 def importer_verify(run_dir):
     return hi.verify_snapshot(run_dir)
+
+
+def assert_no_secret_outside_local(run_dir, secret="the-secret-value-123"):
+    """Shareable output never holds the key; the unredacted originals stay in local/ (0700)."""
+    assert stat.S_IMODE((run_dir / "local").stat().st_mode) == 0o700
+    shared = [p for p in run_dir.rglob("*") if p.is_file() and "local" not in p.parts]
+    assert shared
+    for p in shared:
+        assert secret.encode() not in p.read_bytes(), p
+        assert b"sk-aaaaaaaaaaaaaaaaaaaaaaaa" not in p.read_bytes(), p
+
+
+def test_secrets_in_output_and_native_files_are_redacted(harbor_env):
+    run_dir, state = start(harbor_env("ok"))
+    assert_no_secret_outside_local(run_dir)
+    log = (run_dir / "harbor.log").read_text()
+    assert "using key [REDACTED]" in log and "Bearer [REDACTED]" in log
+    assert state["log"]["redacted"] >= 3
+    assert state["log"]["sha256"] != state["log"]["stored_sha256"]
+    raw_log = (run_dir / "local" / "harbor.raw.log").read_text()
+    assert "the-secret-value-123" in raw_log
+    assert stat.S_IMODE((run_dir / "local" / "harbor.raw.log").stat().st_mode) == 0o600
+    index = {e["path"]: e for e in json.loads((run_dir / "raw_index.json").read_text())}
+    for name in ("fix-git__Bu66kU2/agent/session.log", "fix-git__Bu66kU2/exception.txt"):
+        e = index[name]
+        assert e["redacted"] == 1 and e["stored_sha256"] != e["sha256"], name
+        native = run_dir / "local" / "job" / run_dir.name / name
+        assert hashlib.sha256(native.read_bytes()).hexdigest() == e["sha256"]
+        assert "[REDACTED]" in (run_dir / "raw" / name).read_text()
+    assert importer_verify(run_dir) == []
+
+
+def test_a_failed_start_is_redacted_too(harbor_env):
+    run_dir, state = start(harbor_env("crash_before_job"))
+    assert state["status"] == "failed" and state["log"]["redacted"] >= 2
+    assert_no_secret_outside_local(run_dir)
 
 
 def test_exit_code_zero_is_not_success_per_trial(harbor_env):
@@ -744,29 +827,65 @@ def _spawn_orphan():
     )
 
 
-def _fake_orphaned_run(harbor_env, proc, start_ticks=None):
+_UNSET = object()
+
+
+def _fake_orphaned_run(harbor_env, proc, start=_UNSET, **ident_changes):
+    """A run whose supervisor died while Harbor (``proc``) runs on."""
     from harness.integrations.harbor import process as hp
 
     cfg, root = hc.load_config(harbor_env())
     run_dir = hp.prepare(cfg, root, harbor_env())
     ident = hp.process_identity(proc.pid)
     ident["pgid"] = proc.pid
-    if start_ticks is not None:
-        ident["start_ticks"] = start_ticks
+    if start is not _UNSET:
+        ident["start"] = start
+    ident.update(ident_changes)
     (run_dir / hp.PROCESS).write_text(json.dumps(ident))
     hp._update_state(run_dir, status="running")
     return run_dir
 
 
-def test_status_and_cancel_of_an_orphaned_harbor_process(harbor_env):
+@pytest.fixture(params=["proc", "ps"])
+def identity_method(request, monkeypatch):
+    from harness.integrations.harbor import process as hp
+
+    if request.param == "proc" and not Path("/proc/self/stat").is_file():
+        pytest.skip("no /proc on this host")
+    monkeypatch.setattr(hp, "IDENTITY_METHOD", request.param)
+    return request.param
+
+
+def test_identity_is_pid_start_and_boot(identity_method):
+    from harness.integrations.harbor import process as hp
+
+    proc = _spawn_orphan()
+    try:
+        ident = hp.process_identity(proc.pid)
+        assert ident["method"] == identity_method and ident["start"]
+        assert hp.process_state(ident) == "alive"
+        assert hp.process_state({**ident, "start": "Thu Jan  1 00:00:00 1970"}) == "gone"
+        assert hp.process_state({**ident, "boot": "another-boot"}) == "gone"
+        assert hp.process_state({**ident, "host": "another-host"}) == "unknown"
+        assert hp.process_state({**ident, "start": None}) == "unknown"
+        assert hp.process_state(None) == "none"
+    finally:
+        proc.kill()
+        proc.wait()
+    assert hp.process_state(ident) == "gone"
+
+
+def test_status_and_cancel_of_an_orphaned_harbor_process(harbor_env, identity_method):
     from harness.integrations.harbor import process as hp
 
     proc = _spawn_orphan()
     try:
         run_dir = _fake_orphaned_run(harbor_env, proc)
         st = hp.status(run_dir)
-        assert st["status"] == "orphaned" and st["harbor_process_alive"]
-        res = hp.cancel(run_dir, wait_s=1)
+        assert st["status"] == "orphaned" and st["harbor_process"] == "alive"
+        out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+        assert out.exit_code == 1 and proc.poll() is None  # never a second Harbor on the job
+        res = hp.cancel(run_dir, wait_s=1, grace_s=2)
         assert res["status"] == "cancelled" and res["cancel"] in (
             "terminated",
             "killed after grace period",
@@ -777,18 +896,190 @@ def test_status_and_cancel_of_an_orphaned_harbor_process(harbor_env):
         proc.kill()
 
 
-def test_a_reused_pid_is_never_signalled(harbor_env):
+def test_a_reused_pid_is_never_signalled(harbor_env, identity_method):
     from harness.integrations.harbor import process as hp
 
     proc = _spawn_orphan()
     try:
-        run_dir = _fake_orphaned_run(harbor_env, proc, start_ticks=1)
-        assert hp.status(run_dir)["status"] == "interrupted"
+        run_dir = _fake_orphaned_run(harbor_env, proc, start="Thu Jan  1 00:00:00 1970")
+        st = hp.status(run_dir)
+        assert st["status"] == "interrupted" and st["harbor_process"] == "gone"
         res = hp.cancel(run_dir, wait_s=1)
-        assert "not signalled" in res["cancel"]
+        assert res["cancel"] == "harbor process already gone" and res["status"] == "cancelled"
         assert proc.poll() is None  # still running: not ours to stop
     finally:
         proc.kill()
+
+
+def test_an_unverifiable_process_blocks_cancel_and_resume(harbor_env, identity_method):
+    from harness.integrations.harbor import process as hp
+
+    proc = _spawn_orphan()
+    try:
+        run_dir = _fake_orphaned_run(harbor_env, proc, start=None, note="ps failed")
+        st = hp.status(run_dir)
+        assert st["status"] == "unknown" and "refused" in st["note"]
+        out = CliRunner().invoke(app, ["harbor", "cancel", str(run_dir), "--wait", "0"])
+        assert out.exit_code == 1 and "refused" in out.output
+        assert proc.poll() is None and hp.read_state(run_dir)["status"] == "running"
+        assert hp.status(run_dir)["cancel_pending"]
+        out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+        assert out.exit_code == 1 and "unknown" in out.output
+        calls = (harbor_env.bin / "calls.jsonl").read_text()
+        assert '"resume"' not in calls
+    finally:
+        proc.kill()
+
+
+def test_a_dead_supervisor_without_harbor_is_resumed_once(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    proc = _spawn_orphan()
+    run_dir = _fake_orphaned_run(harbor_env, proc)
+    shutil.copytree(harbor_env.bin / "fixture", run_dir / "local" / "job" / run_dir.name)
+    proc.kill()
+    proc.wait()
+    assert hp.status(run_dir)["status"] == "interrupted"
+    out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+    assert out.exit_code == 0, out.output
+    assert [r["kind"] for r in hp.read_state(run_dir)["runs"]] == ["resume"]
+    out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
+    assert out.exit_code == 1 and "completed" in out.output
+
+
+# --- cancel before and around the start (H2) ----------------------------------------------
+
+
+def _prepared(harbor_env, mode="hang"):
+    from harness.integrations.harbor import process as hp
+
+    cfg_path = harbor_env(mode)
+    cfg, root = hc.load_config(cfg_path)
+    run_dir = hp.prepare(cfg, root, cfg_path)
+    receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+    return run_dir, receipt, {**hr.base_env(), **hp.agent_env(cfg)}
+
+
+def _harbor_runs(harbor_env):
+    calls = [json.loads(c) for c in (harbor_env.bin / "calls.jsonl").read_text().splitlines()]
+    return [c for c in calls if c["argv"][0] == "run" and "--print-config" not in c["argv"]
+            or c["argv"][:2] == ["job", "resume"]]  # fmt: skip
+
+
+def test_cancel_after_prepare_prevents_the_start(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    run_dir, receipt, env = _prepared(harbor_env)
+    res = hp.cancel(run_dir, wait_s=0)
+    assert res["status"] == "cancelled" and res["cancel"] == "harbor was never started"
+    state = hp.supervise(run_dir, receipt["argv"], env, wall_clock_s=30, poll_s=0.05)
+    assert state["status"] == "cancelled" and state["note"] == "cancelled before Harbor started"
+    assert _harbor_runs(harbor_env) == []
+    assert not (run_dir / hp.PROCESS).exists()
+
+
+def test_cancel_while_another_process_holds_the_lock(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    run_dir, receipt, env = _prepared(harbor_env)
+    with hp.run_lock(run_dir):  # another harness process holds the run
+        hp.request_cancel(run_dir)
+        with pytest.raises(hp.RunLocked):
+            hp.supervise(run_dir, receipt["argv"], env, wall_clock_s=30)
+    state = hp.supervise(run_dir, receipt["argv"], env, wall_clock_s=30, poll_s=0.05)
+    assert state["status"] == "cancelled" and _harbor_runs(harbor_env) == []
+
+
+def test_cancel_during_prepare_keeps_the_run_cancelled(harbor_env, monkeypatch):
+    from harness.integrations.harbor import process as hp
+
+    real_run = hp.subprocess.run
+
+    def run_and_cancel(argv, **kw):
+        if "--print-config" in argv:
+            hp.request_cancel(Path(kw["cwd"]))
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(hp.subprocess, "run", run_and_cancel)
+    cfg_path = harbor_env("hang")
+    cfg, root = hc.load_config(cfg_path)
+    run_dir = hp.prepare(cfg, root, cfg_path)
+    assert hp.read_state(run_dir)["status"] == "cancelled"
+    monkeypatch.setattr(hp.subprocess, "run", real_run)
+    receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+    env = {**hr.base_env(), **hp.agent_env(cfg)}
+    state = hp.supervise(run_dir, receipt["argv"], env, wall_clock_s=30)
+    assert state["status"] == "cancelled" and _harbor_runs(harbor_env) == []
+
+
+def test_resume_supersedes_an_older_cancel_but_not_a_newer_one(harbor_env):
+    from harness.integrations.harbor import process as hp
+
+    run_dir, state = start(harbor_env("hang", wall_clock_s=1))
+    assert state["status"] == "timed_out"
+    old = hp.request_cancel(run_dir)
+    argv, _ = hp.resume_argv(run_dir)
+    receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+    env = {**hr.base_env(), "SOME_KEY": "the-secret-value-123"}
+    # a cancel issued after the resume was asked for wins
+    requested = old - 1
+    state = hp.supervise(run_dir, argv, env, wall_clock_s=30, kind="resume",
+                         requested_ns=requested, poll_s=0.05)  # fmt: skip
+    assert state["status"] == "cancelled" and [r["kind"] for r in state["runs"]] == ["run"]
+    # an explicit resume after that cancel supersedes it and runs once
+    requested = time.time_ns()
+    state = hp.supervise(run_dir, argv, env, wall_clock_s=30, kind="resume",
+                         requested_ns=requested, poll_s=0.05)  # fmt: skip
+    assert state["status"] == "completed" and state["superseded_cancel_ns"] == old
+    assert [r["kind"] for r in state["runs"]] == ["run", "resume"]
+    assert not (run_dir / hp.CANCEL).exists()
+    assert receipt["job_dir"].startswith("local/")
+
+
+# --- cleanup budget (H5) ------------------------------------------------------------------
+
+
+def test_a_hanging_docker_daemon_cannot_stall_cleanup(harbor_env):
+    (harbor_env.bin / "docker_mode").write_text("hang")
+    t0 = time.monotonic()
+    run_dir, state = start(harbor_env("hang", wall_clock_s=1, cleanup_s=1.5, stop_grace_s=1))
+    assert time.monotonic() - t0 < 20
+    run = state["runs"][-1]
+    cleanup = run["cleanup"]
+    assert cleanup["leftover"] is None and cleanup["confirmed"] is False
+    assert cleanup["errors"] and cleanup["budget_s"] == 1.5 and cleanup["elapsed_s"] < 5
+    assert set(run["timing_s"]) == {"harbor", "stop", "cleanup"}
+    assert state["status"] == "timed_out"
+
+
+def test_failed_removals_are_reported_not_hidden(harbor_env):
+    (harbor_env.bin / "docker_mode").write_text("rm_fails")
+    _, state = start(harbor_env("hang", wall_clock_s=1, stop_grace_s=1))
+    cleanup = state["runs"][-1]["cleanup"]
+    assert cleanup["containers"] == [] and cleanup["confirmed"] is False
+    assert cleanup["leftover"] == ["c-fix-git__bu66ku2"]
+    assert any("permission denied" in e for e in cleanup["errors"])
+    assert any("permission denied" in e for e in cleanup["late"]["errors"])
+
+
+def test_containers_created_late_are_removed(harbor_env, monkeypatch):
+    from harness.integrations.harbor import process as hp
+
+    real = hp.cleanup_owned
+    calls = []
+
+    def late_container(job_dir, deadline):
+        calls.append(1)
+        if len(calls) == 2:  # appears while the first removal ran
+            with (harbor_env.bin / "containers").open("a") as f:
+                f.write("c-late fix-git__bu66ku2__verifier__1\n")
+        return real(job_dir, deadline)
+
+    monkeypatch.setattr(hp, "cleanup_owned", late_container)
+    _, state = start(harbor_env("hang", wall_clock_s=1, stop_grace_s=1))
+    cleanup = state["runs"][-1]["cleanup"]
+    assert [c["id"] for c in cleanup["late"]["containers"]] == ["c-late"]
+    assert cleanup["leftover"] == [] and cleanup["confirmed"] is True
 
 
 def test_status_command_shows_state(harbor_env):
@@ -804,7 +1095,7 @@ def test_a_config_harbor_rejects_never_starts_a_job(harbor_env):
     assert out.exit_code == 1 and "print-config failed" in " ".join(out.output.split())
     (run_dir,) = harbor_env.out.iterdir()
     assert hp.read_state(run_dir)["status"] == "start_failed"
-    assert not (run_dir / "job").exists()
+    assert not (run_dir / "local" / "job").exists()
     calls = (harbor_env.bin / "calls.jsonl").read_text().splitlines()
     assert all("--print-config" in json.loads(c)["argv"] or json.loads(c)["argv"] == ["--version"]
                for c in calls)  # fmt: skip

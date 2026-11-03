@@ -65,9 +65,32 @@ class RunView:
             "n": len(self.samples),
             "n_scored": len(scored),
             "n_correct": n_correct,
-            # over every sample, unscored and errored ones counted as not correct
+            # over every planned sample: unscored, errored, unfinished and missing ones count
+            # as not correct
             "accuracy": n_correct / len(self.samples) if self.samples else None,
+            # over the scored samples only; not the result of an incomplete run
+            "accuracy_of_scored": n_correct / len(scored) if scored else None,
         }
+
+    def completeness(self) -> dict[str, Any]:
+        missing = sum(1 for s in self.samples if s.outcome == "missing")
+        unfinished = sum(1 for s in self.samples if s.outcome == "running")
+        return {
+            "planned": len(self.samples),
+            "missing": missing,
+            "unfinished": unfinished,
+            "complete": missing == 0 and unfinished == 0,
+        }
+
+    def completeness_warning(self) -> str | None:
+        c = self.completeness()
+        if c["complete"]:
+            return None
+        return (
+            f"incomplete run: {c['missing']} of {c['planned']} planned samples missing, "
+            f"{c['unfinished']} unfinished; they count as not correct, and the accuracy of "
+            "the scored samples is not the run's result"
+        )
 
     def usage(self) -> dict[str, Any]:
         with_model = [s for s in self.samples if s.usage_status != "not_applicable"]
@@ -114,7 +137,7 @@ def _harbor(run_dir: Path) -> RunView:
         rewards = t.get("rewards")
         samples.append(
             SampleView(
-                sample_id=t.get("task_name") or t["trial_name"],
+                sample_id=t.get("task_name") or t.get("trial_name") or "unknown-planned-trial",
                 task=(t.get("task_name") or "?").split("/", 1)[0],
                 repeat=t.get("repeat"),
                 status=t["status"],

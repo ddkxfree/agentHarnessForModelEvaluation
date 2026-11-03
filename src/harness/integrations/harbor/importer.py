@@ -21,6 +21,7 @@ import shutil
 import stat
 import tempfile
 from collections import Counter
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -77,11 +78,15 @@ def _now() -> str:
 
 
 def _env_secrets() -> list[str]:
-    return sorted(
-        {v for k, v in os.environ.items() if _ENV_SECRET_NAME.search(k) and len(v) >= 8},
-        key=len,
-        reverse=True,
-    )
+    return all_secrets()
+
+
+def all_secrets(extra: Iterable[str] = ()) -> list[str]:
+    """Values to redact: the given ones and those of credential-named environment variables,
+    longest first so a secret containing another is replaced whole."""
+    values = {v for k, v in os.environ.items() if _ENV_SECRET_NAME.search(k) and len(v) >= 8}
+    values |= {v for v in extra if v and len(v) >= 6}
+    return sorted(values, key=len, reverse=True)
 
 
 def redact_text(text: str, env_secrets: list[str]) -> tuple[str, int]:
@@ -93,7 +98,16 @@ def redact_text(text: str, env_secrets: list[str]) -> tuple[str, int]:
     for pattern in _SECRET_TEXT:
         text, k = pattern.subn(REDACTED, text)
         n += k
-    text, k = _SECRET_ASSIGN.subn(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
+    k = 0
+
+    def assignment(m: re.Match) -> str:
+        nonlocal k
+        if m.group(3).startswith(REDACTED):
+            return m.group(0)
+        k += 1
+        return f"{m.group(1)}{m.group(2)}{REDACTED}"
+
+    text = _SECRET_ASSIGN.sub(assignment, text)
     return text, n + k
 
 
@@ -269,31 +283,50 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _task_path(raw: bytes | None) -> str | None:
+    try:
+        data = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    cfg = data.get("config") if isinstance(data.get("config"), dict) else data
+    task = cfg.get("task") if isinstance(cfg.get("task"), dict) else {}
+    path = task.get("path")
+    return path if isinstance(path, str) else None
+
+
 def build_records(
     job_dir: Path, files: dict[str, bytes], config: dict[str, Any], lock: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Trials and the job summary, from the (redacted) file contents keyed by relative path."""
+    """Trials and the job summary, from the (redacted) file contents keyed by relative path.
+
+    Every trial the job planned has a record: trials without a directory yet (or whose
+    directory is gone) get a ``missing`` placeholder, so they stay in every denominator.
+    """
     trial_dirs = sorted({p.split("/", 1)[0] for p in files if p.count("/") >= 1})
     trials, problems = [], []
     for d in trial_dirs:
         if f"{d}/config.json" not in files and f"{d}/result.json" not in files:
             continue  # not a trial directory
         raw = files.get(f"{d}/result.json")
+        path = _task_path(raw) or _task_path(files.get(f"{d}/config.json"))
         if raw is None:
-            trials.append(_placeholder(d, "running", "no result.json yet"))
+            trials.append(_placeholder(d, "running", "no result.json yet", path))
             continue
         try:
             r = json.loads(raw)
             trial_lock = json.loads(files[f"{d}/lock.json"]) if f"{d}/lock.json" in files else None
         except ValueError as exc:
             problems.append(f"{d}: unreadable record ({exc})")
-            trials.append(_placeholder(d, "invalid", f"unreadable result.json: {exc}"))
+            trials.append(_placeholder(d, "invalid", f"unreadable result.json: {exc}", path))
             continue
         if not isinstance(r, dict) or r.get("trial_name") != d:
             problems.append(f"{d}: result.json belongs to {r.get('trial_name')!r}")
-            trials.append(_placeholder(d, "invalid", "result.json names another trial"))
+            trials.append(_placeholder(d, "invalid", "result.json names another trial", path))
             continue
         t = map_trial(r, trial_lock)
+        t["task_path"] = path
         t["files"] = sorted(p[len(d) + 1 :] for p in files if p.startswith(f"{d}/"))
         t["trajectory"] = next(
             (p for p in t["files"] if p.startswith("agent/") and p.endswith("trajectory.json")),
@@ -306,19 +339,44 @@ def build_records(
     if "result.json" in files:
         result = json.loads(files["result.json"])
     stats = (result or {}).get("stats") or {}
-    expected = (result or {}).get("n_total_trials")
-    if expected is None:
-        expected = len(lock.get("trials") or [])
+    planned = [t.get("task") or {} for t in lock.get("trials") or [] if isinstance(t, dict)]
+    reported_total = (result or {}).get("n_total_trials")
+    expected = max(len(planned), reported_total if isinstance(reported_total, int) else 0)
+    n_found = len(trials)
+
+    # Names for placeholders: what Harbor called the task in a trial record, else the lock's.
+    names = {
+        t["task_path"]: t["task_name"] for t in trials if t.get("task_path") and t.get("task_name")
+    }
+    for t in trials:
+        if t.get("task_name") is None:
+            t["task_name"] = names.get(t.get("task_path")) or None
+    found_by_path = Counter(t.get("task_path") for t in trials)
+    for task in planned:
+        path = task.get("path")
+        if found_by_path[path] > 0:
+            found_by_path[path] -= 1
+            continue
+        if len(trials) >= max(expected, n_found):
+            break
+        trials.append(
+            _placeholder(None, "missing", "planned by the job; no trial directory",
+                         path, names.get(path) or task.get("name"))
+        )  # fmt: skip
+    while len(trials) < expected:
+        trials.append(_placeholder(None, "missing", "planned by the job; task unknown", None))
+    _number_placeholders(trials)
+
     outcomes = Counter(t["outcome"] for t in trials)
     with_model = [t for t in trials if t["usage"]["status"] != "not_applicable"]
     job = {
-        "status": _job_status(result, len(trials)),
+        "status": _job_status(result, n_found),
         "id": (result or {}).get("id"),
         "started_at": (result or {}).get("started_at"),
         "finished_at": (result or {}).get("finished_at"),
-        "n_total_trials": expected,
-        "n_trials_found": len(trials),
-        "n_missing": max(0, expected - len(trials)),
+        "n_total_trials": max(expected, n_found),
+        "n_trials_found": n_found,
+        "n_missing": max(0, expected - n_found),
         "n_retries": stats.get("n_retries"),
         "outcomes": dict(sorted(outcomes.items())),
         "usage_reported": f"{sum(t['usage']['status'] == 'reported' for t in with_model)}"
@@ -329,10 +387,30 @@ def build_records(
     return trials, job
 
 
-def _placeholder(trial_name: str, status: str, note: str) -> dict[str, Any]:
+def _number_placeholders(trials: list[dict[str, Any]]) -> None:
+    """Placeholders continue the repeat numbering of their task, so every key is unique."""
+    used: dict[str, set] = {}
+    for t in trials:
+        if t.get("repeat") is not None:
+            used.setdefault(t.get("task_name") or "", set()).add(t["repeat"])
+    for t in trials:
+        if t.get("repeat") is None:
+            taken = used.setdefault(t.get("task_name") or "", set())
+            t["repeat"] = next(i for i in range(len(taken) + 1) if i not in taken)
+            taken.add(t["repeat"])
+
+
+def _placeholder(
+    trial_name: str | None,
+    status: str,
+    note: str,
+    task_path: str | None,
+    task_name: str | None = None,
+) -> dict[str, Any]:
     return {
         "trial_name": trial_name,
-        "task_name": None,
+        "task_name": task_name,
+        "task_path": task_path,
         "status": status,
         "outcome": status,
         "rewards": None,
@@ -349,25 +427,23 @@ def import_job(
     out_root: Path = Path("runs/harbor"),
     *,
     run_dir: Path | None = None,
-    copy: bool = True,
     replace: bool = False,
+    secrets: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Import ``job_dir``; returns ``{"run_dir", "action", "record"}`` where action is
     created, unchanged or replaced.
 
-    With ``copy=False`` the job directory must already sit inside ``run_dir`` (a run started
-    by ``harness harbor run``); it is indexed in place instead of copied.
+    ``secrets`` are values to redact besides the credential-looking ones (e.g. the values a
+    run handed to Harbor); values shorter than 6 characters are ignored.
     """
     job_dir = Path(job_dir).absolute()
     config, lock = check_job(job_dir)
     run_id = run_id_for(config, lock)
     run_dir = Path(run_dir) if run_dir is not None else Path(out_root) / run_id
-    if not copy and not job_dir.is_relative_to(run_dir.absolute()):
-        raise HarborImportError("copy=False needs the job directory inside the run directory")
-    if copy and run_dir.absolute().is_relative_to(job_dir):
+    if run_dir.absolute().is_relative_to(job_dir):
         raise HarborImportError("the run directory cannot be inside the job directory")
 
-    env_secrets = _env_secrets()
+    env_secrets = all_secrets(secrets)
     before = scan(job_dir)
     files: dict[str, bytes] = {}
     index, redactions = [], 0
@@ -379,7 +455,7 @@ def import_job(
             index.append(entry)
             continue
         data = _read_regular(job_dir / e["path"])
-        stored, n = redact_bytes(e["path"], data, env_secrets) if copy else (data, 0)
+        stored, n = redact_bytes(e["path"], data, env_secrets)
         redactions += n
         files[e["path"]] = stored
         entry = {"path": e["path"], "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
@@ -404,14 +480,9 @@ def import_job(
             "no snapshot written. Import again once the job has finished."
         )
 
-    if not copy:
-        # A job written by our own run: secrets never reach it (they are passed through the
-        # process environment), but its records still go through redaction before mapping.
-        files = {p: redact_bytes(p, b, env_secrets)[0] for p, b in files.items()}
     trials, job = build_records(job_dir, files, config, lock)
     index_text = json.dumps(index, indent=1)
     index_sha = hashlib.sha256(index_text.encode()).hexdigest()
-    raw_rel = "raw" if copy else job_dir.relative_to(run_dir.absolute()).as_posix()
     record = {
         "kind": "harbor_run",
         "schema_version": 1,
@@ -425,8 +496,7 @@ def import_job(
             "lock_created_at": lock.get("created_at"),
         },
         "raw": {
-            "dir": raw_rel,
-            "copied": copy,
+            "dir": "raw",
             "index_sha256": index_sha,
             "n_files": len(files),
             "bytes": sum(e.get("size", 0) for e in index if "skipped" not in e),
@@ -459,15 +529,14 @@ def import_job(
             )
     action = "replaced" if existing.is_file() else "created"
     run_dir.mkdir(parents=True, exist_ok=True)
-    if copy:
-        staging = Path(tempfile.mkdtemp(prefix=".raw-", dir=run_dir))
-        for rel, data in files.items():
-            dest = staging / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-        if (run_dir / "raw").exists():
-            shutil.rmtree(run_dir / "raw")
-        os.replace(staging, run_dir / "raw")
+    staging = Path(tempfile.mkdtemp(prefix=".raw-", dir=run_dir))
+    for rel, data in files.items():
+        dest = staging / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    if (run_dir / "raw").exists():
+        shutil.rmtree(run_dir / "raw")
+    os.replace(staging, run_dir / "raw")
     _write_atomic(run_dir / INDEX, index_text)
     _write_atomic(run_dir / TRIALS, "".join(json.dumps(t) + "\n" for t in trials))
     _write_atomic(run_dir / RUN_RECORD, json.dumps(record, indent=2))

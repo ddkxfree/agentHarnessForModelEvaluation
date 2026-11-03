@@ -47,7 +47,7 @@
 
 ## G3／G4 执行、状态、取消与恢复
 
-- 运行目录：`run.json`（可分享收据：请求配置、解析后 JobConfig（脱敏）、argv、Harbor 身份、任务指纹、能力表、环境变量名）、`state.json`、`harbor.log`、`job/<name>/`（Harbor 原生目录，原地索引不复制）、`local/`（0700，仅本机：进程身份、锁、取消请求）。
+- 运行目录：`run.json`（可分享收据：请求配置、解析后 JobConfig（脱敏）、argv、Harbor 身份、任务指纹、能力表、环境变量名）、`state.json`、`harbor.log`、`job/<name>/`（Harbor 原生目录，原地索引不复制）、`local/`（0700，仅本机：进程身份、锁、取消请求）。（第 43 轮已改：原生目录移入 `local/job/`，分享内容一律脱敏，见 [43](43-harbor-review-fixes.md)。）
 - 进程身份为 pid＋/proc 启动时刻＋boot id＋主机名；cancel／status 先核对，PID 被复用时不发信号。`flock` 互斥：同一运行同时只能有一个监督进程，resume 不会并发执行；监督进程崩溃锁自动释放，status 显示 `interrupted` 或 `orphaned`（Harbor 仍在跑）。
 - 停止：对 Harbor 进程组发 SIGTERM（0.25.0 转为 KeyboardInterrupt 并取消 Trial），宽限 60 秒后 SIGKILL；随后删除本 Job 自己的容器和网络（compose 项目名以本 Job Trial 目录名开头，即 `<trial>__env`、`<trial>__verifier__*`），5 秒后再查一次迟到资源并记录残留，失败如实写入 state。
 - 退出码只记录不决定成败：Job 完成但 Trial 失败为 completed＋wrong；非零退出仍导入已有 Trial。

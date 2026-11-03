@@ -71,6 +71,10 @@ def diff_views(a: RunView, b: RunView) -> dict[str, Any]:
         notes.append(
             f"usage coverage {ua['coverage']} vs {ub['coverage']}: cost and tokens not comparable"
         )
+    for side, view in (("a", a), ("b", b)):
+        warning = view.completeness_warning()
+        if warning:
+            notes.append(f"{side}: {warning}")
     unpaired = sorted(by_key_a.keys() ^ by_key_b.keys())
     if unpaired:
         notes.append(f"{len(unpaired)} sample(s) present in only one run are not compared")
@@ -79,6 +83,7 @@ def diff_views(a: RunView, b: RunView) -> dict[str, Any]:
         "b": {"run_id": b.run_id, "backend": b.backend, "status": b.status},
         "config_changes": _config_changes(a, b) if a.backend == b.backend else [],
         "accuracy": {"a": a.accuracy(), "b": b.accuracy()},
+        "completeness": {"a": a.completeness(), "b": b.completeness()},
         "outcomes": {"a": a.outcomes(), "b": b.outcomes()},
         "usage": {"a": ua, "b": ub, "comparable": cost_comparable},
         "task_identity": identity,
@@ -102,6 +107,7 @@ def report_view(view: RunView, *, chars: int = 800) -> str:
         f"- backend: {view.backend}, status: {safe(view.status)}",
         f"- provenance: `{safe(json.dumps(view.provenance, sort_keys=True))}`",
         f"- samples: {acc['n']}, scored: {acc['n_scored']}, correct: {acc['n_correct']}",
+        *([f"- **{safe(w)}**"] if (w := view.completeness_warning()) else []),
         f"- usage reported: {usage['coverage']} samples that use a model",
         "",
         "| outcome | count |",
