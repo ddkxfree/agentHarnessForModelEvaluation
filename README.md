@@ -87,6 +87,18 @@ harness onboard -c configs/onboard-world-capitals.yaml -m <provider/model>   # �
 harness onboard-verify runs/onboard/<attempt>                      # 不调用模型，重验候选实现
 ```
 
+Harbor 后端（固定 0.25.0，装在独立环境，见 [41](docs/progress/41-harbor-backend.md)）：
+
+```bash
+uv venv --python 3.12 ~/.local/share/agent-harness/harbor-0.25.0
+VIRTUAL_ENV=~/.local/share/agent-harness/harbor-0.25.0 uv pip install --require-hashes -r configs/harbor/requirements-0.25.0.lock
+harness harbor doctor -c configs/harbor/fix-git-oracle.yaml        # 只检查，不运行、不调模型
+harness harbor run -c configs/harbor/fix-git-oracle.yaml           # 前台运行，总时限，结束清理本 Job 容器
+harness harbor import <harbor_job_dir>                             # 离线导入，不需要 Harbor／Docker
+harness harbor status|cancel|resume runs/harbor/<run>
+harness show runs/harbor/<run>                                     # show／diff／report 同时支持两种来源
+```
+
 `-p task.key=value` 的值按 YAML 解析，例如 `-p mmlu.subjects=[anatomy,virology]`。
 
 `compare --resume` 会重新执行工具与评分，模型请求可从缓存回放。报告区分分数与性能的可比性。Judge 更换 rubric／实际提示词／裁判模型需要新调用，`rescore` 只重解析或重聚合已保存原文。onboarding 默认在无网络、只读根文件系统、只有临时验证目录可写的容器中执行候选代码，Docker 不可用时记为环境故障，不会退回宿主进程；`--executor subprocess` 没有文件系统隔离，只用于可信的脚本化候选。

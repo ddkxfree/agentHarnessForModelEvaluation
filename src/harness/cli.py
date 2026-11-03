@@ -243,7 +243,13 @@ def show(
     """Print a run's summary and example samples, e.g. all extract_failed cases.
 
     Agent samples are printed with their full trajectory of tool calls and observations.
+    Imported Harbor runs are shown from their mapped trials.
     """
+    if (run_dir / "harbor_run.json").is_file():
+        from harness.harbor_cli import show_harbor
+
+        show_harbor(run_dir, outcome=outcome, sample=sample, n=n)
+        return
     manifest = read_json(run_dir / "manifest.json")
     console.print(
         _summary_table(manifest["results"], manifest["run_id"], all_outcomes=all_outcomes)
@@ -348,6 +354,12 @@ def verify(
 def diff(run_a: Path, run_b: Path, show_ids: Annotated[int, typer.Option()] = 10) -> None:
     """Compare two runs: configuration/environment changes and per-sample flips."""
     from harness.analysis.diff import diff_runs
+
+    if (run_a / "harbor_run.json").is_file() or (run_b / "harbor_run.json").is_file():
+        from harness.harbor_cli import diff_any
+
+        diff_any(run_a, run_b, show_ids=show_ids)
+        return
 
     d = diff_runs(run_a, run_b)
     console.rule(f"{d['a']}  vs  {d['b']}")
@@ -521,6 +533,13 @@ def report(
     from harness.analysis.report import failure_report
 
     path = run_dir / "report.md"
+    if (run_dir / "harbor_run.json").is_file():
+        from harness.results import open_run
+        from harness.results.analysis import report_view
+
+        path.write_text(report_view(open_run(run_dir)))
+        console.print(f"wrote {path}")
+        return
     path.write_text(failure_report(run_dir, per_outcome=per_outcome, seed=seed))
     console.print(f"wrote {path}")
 
@@ -627,6 +646,11 @@ def compare_report(compare_dir: Path) -> None:
     report = build_report(compare_dir)
     write_json(compare_dir / "compare.json", report)
     _print_comparison(report)
+
+
+from harness.harbor_cli import harbor_app  # noqa: E402
+
+app.add_typer(harbor_app, name="harbor")
 
 
 if __name__ == "__main__":

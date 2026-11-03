@@ -1,0 +1,14 @@
+# Harbor backend with a real model (Harbor's terminus-2 agent). NOT validated in this
+# repository: it calls a paid API. The key is read from the named environment variable and is
+# passed to the Harbor process environment only.
+schema_version: 1
+task:
+  terminal_bench: fix-git
+agent:
+  name: terminus-2
+  model: anthropic/claude-sonnet-4-5
+  env: [ANTHROPIC_API_KEY]
+attempts: 1
+limits:
+  wall_clock_s: 3600
+output_dir: runs/harbor

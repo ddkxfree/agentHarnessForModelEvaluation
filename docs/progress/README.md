@@ -44,5 +44,6 @@
 | [38](38-fix-git-token-limit-analysis.md) | 真实 TB fix-git：找到丢失提交、merge 冲突未处理，30,032 tokens 耗尽预算；核对用量与 shell 退出状态，建议单变量预算对照 | 真实模型失败分析 |
 | [39](39-harbor-integration-plan.md) | Harbor 双入口正式交接：固定发行版、隔离 CLI、G0～G6 连续自验、统一结果与生命周期；只完成计划，待 Cursor 实现 | 开发计划 |
 | [40](40-harbor-development-bounds.md) | Harbor 开发防空转：单批时限、重试／等待上限、进程退出与资源清理、恢复不重置预算、到限草稿交付；区分操作约束与账户硬限额 | 开发计划补充 |
+| [41](41-harbor-backend.md) | Harbor 0.25.0 双执行入口：独立 venv＋哈希锁、doctor／run／import／status／cancel／resume，统一只读视图；真实 nop、取消、恢复通过，Oracle 满分因本机 compose 网络无出网未验收 | 工程集成，待评审 |
 
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。

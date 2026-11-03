@@ -1,0 +1,11 @@
+# Harbor backend, no model: the task's own reference solution (Harbor's oracle agent).
+#   uv run harness harbor doctor -c configs/harbor/fix-git-oracle.yaml
+#   uv run harness harbor run -c configs/harbor/fix-git-oracle.yaml
+schema_version: 1
+task:
+  terminal_bench: fix-git
+agent:
+  name: oracle
+limits:
+  wall_clock_s: 1200
+output_dir: runs/harbor

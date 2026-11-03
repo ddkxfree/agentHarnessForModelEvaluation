@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py", line 606, in run
+    await self._prepare()
+  File "/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py", line 645, in _prepare
+    await self._setup_agent_environment()
+  File "/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py", line 1849, in _setup_agent_environment
+    await self._start_agent_environment()
+  File "/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py", line 1855, in _start_agent_environment
+    await asyncio.wait_for(
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py", line 1091, in start
+    await self._run_docker_compose_command(["up", *runtime.up_args])
+  File "/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py", line 765, in _run_docker_compose_command
+    raise RuntimeError(
+RuntimeError: Docker compose command failed for environment fix-git. Command: docker compose --project-name fix-git__ncvpciu__env --project-directory /cache/terminal-bench-2/2fd12b88aafdd04a52c298e3940bcb189f9766d6/fix-git/environment -f /tmp/tmptwd_3gus/fix-git__nCvpciu__env-docker-compose-resources.json -f /opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-prebuilt.yaml -f /tmp/tmp463cpr_9/docker-compose-environment.json -f /tmp/tmploa9vn6r/docker-compose-mounts.json up --detach --wait. Return code: 125. Stdout: unknown flag: --project-name
+
+Usage:  docker [OPTIONS] COMMAND [ARG...]
+
+Run 'docker --help' for more information
+. Stderr: None. 
