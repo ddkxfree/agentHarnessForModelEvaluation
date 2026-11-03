@@ -18,7 +18,7 @@
 
 从模型问答到工具 Agent，再到 TB、SWE 和 JobBench 的逐步练习见 [实际运行计划](docs/first-run-plan.md)。JobBench 尚未接入；第一轮先做无模型的环境与 Oracle 检查。
 
-下一开发批次见 [Harbor 双执行入口指南](docs/harbor-integration-plan.md)：Native 与 Harbor 隔离执行、共享结果分析。当前仅有计划，Harbor 后端尚未实现；文档中的新命令暂不可运行。
+Harbor 双执行入口见 [Harbor 双执行入口指南](docs/harbor-integration-plan.md)：Native 与 Harbor 隔离执行、共享结果分析。后端已实现（[41](docs/progress/41-harbor-backend.md)），第 42 轮评审问题已补修（[43](docs/progress/43-harbor-review-fixes.md)）；真实 Oracle／nop 验收待本机执行。
 
 ## 快速开始
 
@@ -98,6 +98,8 @@ harness harbor import <harbor_job_dir>                             # 离线导�
 harness harbor status|cancel|resume runs/harbor/<run>
 harness show runs/harbor/<run>                                     # show／diff／report 同时支持两种来源
 ```
+
+Harbor 运行目录中 `run.json`、`state.json`、`harbor.log`、`raw/`、`trials.jsonl` 等已脱敏、可分享；`local/`（0700）保存 Harbor 原生 Job、未脱敏日志、进程身份与锁，不要分享。`limits` 支持 `wall_clock_s`、`prepare_s`、`stop_grace_s`、`cleanup_s`；本平台结束时总会删除本 Job 的容器，`environment.delete: false` 会被拒绝。缺失或未完成的 Trial 计入分母，show／report／diff 会提示运行不完整。
 
 `-p task.key=value` 的值按 YAML 解析，例如 `-p mmlu.subjects=[anatomy,virology]`。
 
