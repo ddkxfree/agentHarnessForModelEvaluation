@@ -133,10 +133,10 @@ def open_run(run_dir: Path) -> RunView:
 
 
 def _harbor(run_dir: Path) -> RunView:
-    from harness.integrations.harbor.importer import stale_warning
+    from harness.integrations.harbor.importer import record_warnings
 
     record = json.loads((run_dir / HARBOR_RECORD).read_text())
-    stale = stale_warning(record)
+    notes = record_warnings(record)
     samples = []
     receipt = record.get("run") or {}
     fingerprint = (receipt.get("task") or {}).get("fingerprint")
@@ -191,7 +191,7 @@ def _harbor(run_dir: Path) -> RunView:
             "tasks": record.get("tasks"),
             "run": receipt.get("config"),
         },
-        record_warnings=[stale] if stale else [],
+        record_warnings=notes,
     )
 
 

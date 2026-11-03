@@ -124,24 +124,46 @@ def import_(
 
 
 @harbor_app.command()
-def rebuild(run_dir: Path) -> None:
-    """Rebuild an imported run's records from its own redacted snapshot with the current
-    importer (e.g. after an importer fix). Offline; the snapshot is checked, not changed."""
-    from harness.integrations.harbor.importer import HarborImportError
+def rebuild(
+    run_dir: Path,
+    secret_env: Annotated[
+        list[str] | None,
+        typer.Option("--secret-env", help="Also redact the value of this environment variable"),
+    ] = None,
+) -> None:
+    """Bring an imported run up to the current importer and redaction: from Harbor's original
+    job directory if the run keeps it in local/, else from its own snapshot, which is redacted
+    again if it is outdated. Offline."""
+    import os
+
+    from harness.integrations.harbor.importer import HarborImportError, record_warnings
     from harness.integrations.harbor.importer import rebuild as rebuild_records
 
+    missing = [n for n in secret_env or [] if n not in os.environ]
+    if missing:
+        _say(f"not rebuilt: environment variables not set: {', '.join(missing)}")
+        raise typer.Exit(1)
     try:
-        res = rebuild_records(run_dir)
+        res = rebuild_records(run_dir, [os.environ[n] for n in secret_env or []])
     except (HarborImportError, FileNotFoundError) as exc:
         _say(f"cannot rebuild {run_dir}: {exc}")
         raise typer.Exit(1) from None
-    job = res["record"]["job"]
-    previous = (res["record"]["rebuilt"]["previous_importer"] or {}).get("version")
-    _say(f"rebuilt {run_dir} (importer {previous} -> {res['record']['importer']['version']})")
+    record = res["record"]
+    job, rebuilt, raw = record["job"], record["rebuilt"], record["raw"]
+    previous = (rebuilt["previous"]["importer"] or {}).get("version")
+    _say(
+        f"rebuilt {run_dir} from {rebuilt['from']} (importer {previous} -> "
+        f"{record['importer']['version']}, redaction {rebuilt['previous']['redaction']} -> "
+        f"{raw['redaction']['version']})"
+    )
+    if "redacted_at_migration" in raw["redaction"]:
+        _say(f"snapshot redacted again: {raw['redaction']['redacted_at_migration']} value(s)")
     _say(
         f"job {job['status']}: {job['n_trials_found']}/{job['n_total_trials']} trials, "
         f"outcomes {job['outcomes']}"
     )
+    for warning in record_warnings(record):
+        _say(f"WARNING {warning}")
 
 
 def show_harbor(run_dir: Path, *, outcome: str | None, sample: str | None, n: int) -> None:
