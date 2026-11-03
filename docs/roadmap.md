@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+Harbor 第 46 轮补修（2026-11-03，分支 `cursor/harbor-review46-fixes-7316`）：H4b 已修复，用真实旧导入器产物验证 rebuild 后公开快照不含合成凭据，迁移快照保留分享前审核标记；D1 补交进度 45。基础回归 459 passed、4 skipped。待 Codex 复评，之后用户本机补 Oracle／nop 与 Native Docker 回归，见 [47](progress/47-harbor-review46-fixes.md)。
+
 Harbor 第 44 轮补修复评（2026-11-03，master `f154ce6`，PR #27 已合并）：macOS 专项 91 passed、5 skipped；基础离线回归 443 passed、9 skipped、6 deselected，静态检查通过。H1a／H3a／H4a 原主路径通过；仍需补 H4b（rebuild 保留旧版未脱敏快照但清除版本警告）及 D1（进度 45 文件未提交）。可继续无模型验收和只读展示开发，旧归档公开前须补迁移；本轮没有真实 Harbor／Docker 验收或模型调用，见 [46](progress/46-harbor-review44-fixes-review.md)。
 
 Harbor 第 44 轮补修（2026-11-03，分支 `cursor/harbor-review44-fixes-7316`）：H1a／H3a／H4a 已修复并有离线回归（EPERM 进程组判定、旧归档警告与 `harness harbor rebuild`、非文本逐字节脱敏）；基础回归 454 passed、4 skipped。待 Codex 复评，之后用户本机补 macOS 用例、Oracle／nop 与 Native Docker 回归，见 [45](progress/45-harbor-review44-fixes.md)。

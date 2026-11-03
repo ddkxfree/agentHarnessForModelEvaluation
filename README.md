@@ -96,7 +96,7 @@ harness harbor doctor -c configs/harbor/fix-git-oracle.yaml        # 只检查�
 harness harbor run -c configs/harbor/fix-git-oracle.yaml           # 前台运行，总时限，结束清理本 Job 容器
 harness harbor import <harbor_job_dir>                             # 离线导入，不需要 Harbor／Docker
 harness harbor status|cancel|resume runs/harbor/<run>
-harness harbor rebuild runs/harbor/<run>                           # 导入器升级后从脱敏快照重建记录
+harness harbor rebuild runs/harbor/<run>                           # 导入器／脱敏升级后重建；旧快照会重新脱敏，可加 --secret-env NAME
 harness show runs/harbor/<run>                                     # show／diff／report 同时支持两种来源
 ```
 

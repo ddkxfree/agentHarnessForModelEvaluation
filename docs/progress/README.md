@@ -50,5 +50,6 @@
 | [44](44-harbor-fixes-review.md) | PR #26 复评：H1a macOS 退出探测异常、H3a 旧归档未重建、H4a 非文本日志绕过脱敏待补；讨论 DeepSeek 小规模实验与只读网页展示 | Harbor 复评与展示方向 |
 | [45](45-harbor-review44-fixes.md) | H1a 进程组存活由成员列表判定、EPERM 不当已退出，停不下时记 failed 不写 cancelled；H3a 导入器升到 2、旧归档警告与 `harbor rebuild`；H4a 非 UTF-8／NUL／二进制逐字节脱敏；454 passed、4 skipped | Harbor 补修，待复评 |
 | [46](46-harbor-review44-fixes-review.md) | PR #27 复评：macOS Harbor 专项 91 passed、5 skipped；原三项主路径通过，旧快照 rebuild 脱敏迁移 H4b 和未提交的第 45 轮文档 D1 待补 | Harbor 补修复评 |
+| [47](47-harbor-review46-fixes.md) | H4b 快照脱敏版本单独记录，rebuild 优先从 local/ 原件重导入、否则重新脱敏旧快照（保留原始哈希、更新存储哈希），旧快照标“不可分享”、迁移后标“分享前审核”；D1 补交进度 45；459 passed、4 skipped | Harbor 补修，待复评 |
 
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。
