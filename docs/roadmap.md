@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+Harbor 双入口第一批（2026-11-03，分支 `codex/harbor-backend`）：固定 Harbor 0.25.0 独立安装，新增 `harness harbor doctor／run／import／status／cancel／resume`，show／diff／report 统一读取两种来源，Native 不变。本机真实运行 nop 对照、取消与恢复通过且无残留容器；fix-git Oracle 满分因本机 compose 网络无法出网未验收（blocked），真实模型示例未运行。待 Codex 评审，见 [41](progress/41-harbor-backend.md)。
+
 开发交接（2026-11-03）：用户确认 Native／Harbor 双执行入口方向，新增 [Harbor 集成指南](harbor-integration-plan.md)。保留 Native，Harbor 使用独立环境与固定发行版 CLI，G0～G6 连续开发自验后统一 PR 评审。当前仅完成计划，尚未安装／实现／验收 Harbor；见 [39](progress/39-harbor-integration-plan.md)。本批次优先完成执行基础整合，阶段 11～20 的研究范围继续保留。
 
 开发预算补充（2026-11-03）：指南 2.1～2.4 增加单批 180 分钟、同故障最多 3 次执行、环境准备累计等待 25 分钟、命令超时／资源清理、上下文恢复保留预算和到限交付规则。属于开发操作约束，不是 Cursor 账户 token 硬限额，未新增运行时实现；见 [40](progress/40-harbor-development-bounds.md)。

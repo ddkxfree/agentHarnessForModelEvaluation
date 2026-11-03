@@ -23,6 +23,8 @@ uv run python examples/onboard/demo.py /tmp/onboard-demo                        
 
 The onboarding example in `examples/onboard/world-capitals/` is pinned by `source_sha256` in `configs/onboard-world-capitals.yaml`; update the pin whenever a file there changes. Candidate code from a model is validated in a Docker container (`executor: docker`, the default); `executor: subprocess` has no filesystem isolation and is only for trusted, scripted candidates such as the tests and the demo.
 
+Harbor backend (`harness harbor ...`): Harbor 0.25.0 lives in its own venv, never in the project environment (see README). Unit tests use fake `harbor`/`docker` executables (`tests/harbor_fakes.py`) and real, path-sanitized job fixtures in `tests/fixtures/harbor/0.25.0/`. Supporting another Harbor release means re-checking its CLI options and job format, then adding new fixtures; other versions are refused.
+
 ## Conventions
 
 - New benchmarks go in `src/harness/tasks/<name>.py` and register with `@register("<name>")`. Adding a benchmark must not require changes to `core/`.
