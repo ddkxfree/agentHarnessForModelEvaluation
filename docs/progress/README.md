@@ -41,5 +41,6 @@
 | [35](35-docker-proxy-and-oracle.md) | Docker 配置 7897 代理、Python 官方镜像拉取与运行成功；三个自建任务参考解全过、不操作全失败，2 个 Docker 测试通过，无遗留评测容器 | 首次无模型环境验收通过 |
 | [36](36-stage11-20-design.md) | 阶段 11～20 设计：诊断、回归、故障注入、Docker SRE、任务生成与受控优化的分批开发；Cursor 启动提示词与到期前收口范围；仅文档设计 | 后续研究能力与平台扩展计划 |
 | [37](37-readable-cli-summary.md) | run／show 改为中英文两列汇总，非零异常自动显示，--all-outcomes 展开零计数；窄终端完整换行 | 终端操作体验 |
+| [38](38-fix-git-token-limit-analysis.md) | 真实 TB fix-git：找到丢失提交、merge 冲突未处理，30,032 tokens 耗尽预算；核对用量与 shell 退出状态，建议单变量预算对照 | 真实模型失败分析 |
 
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。

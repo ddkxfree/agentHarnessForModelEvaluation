@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+真实 TB 单题模型分析（2026-10-31）：用户运行 DeepSeek Flash＋BasicAgent 解 fix-git，找到悬空提交，merge 后出现未解决冲突；累计 30,032 tokens 达到 30,000 预算而停止，评分 1 项通过、1 项失败，reward=0。约 94% 用量来自输入；下一次建议仅增加 token 预算做对照，尚未执行，见 [38](progress/38-fix-git-token-limit-analysis.md)。
+
 终端操作体验（2026-10-29）：run／show 汇总改为中英文两列布局，长字段换行，非零异常自动显示；show --all-outcomes 可展开全部零计数类型。历史单题记录已验证显示，本机 352 passed、24 skipped，静态检查通过；本轮无新模型调用，见 [37](progress/37-readable-cli-summary.md)。
 
 后续设计更新（2026-10-28）：新增 [阶段 11～20 开发计划](stage11-20-plan.md)，按 13 诊断 → 18 回归 → 16 故障注入 → 19 Docker SRE → 11 任务候选生成 → 12 受控优化推进；含 Cursor 分批交接、验收与十一月中旬前建议窗口。此轮仅完成设计，未实现新功能，未新增运行验收；14／15／17／K8s 与公开榜保留后续范围。见 [36](progress/36-stage11-20-design.md)。
