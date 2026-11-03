@@ -1,0 +1,46 @@
+Ign:1 http://deb.debian.org/debian bookworm InRelease
+Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+Ign:1 http://deb.debian.org/debian bookworm InRelease
+Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+Ign:1 http://deb.debian.org/debian bookworm InRelease
+Ign:2 http://deb.debian.org/debian bookworm-updates InRelease
+Ign:3 http://deb.debian.org/debian-security bookworm-security InRelease
+Err:1 http://deb.debian.org/debian bookworm InRelease
+  Could not connect to debian.map.fastlydns.net:80 (199.232.186.132), connection timed out Could not connect to deb.debian.org:80 (151.101.22.132), connection timed out
+Err:2 http://deb.debian.org/debian bookworm-updates InRelease
+  Unable to connect to deb.debian.org:http:
+Err:3 http://deb.debian.org/debian-security bookworm-security InRelease
+  Unable to connect to deb.debian.org:http:
+Reading package lists...
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  Could not connect to debian.map.fastlydns.net:80 (199.232.186.132), connection timed out Could not connect to deb.debian.org:80 (151.101.22.132), connection timed out
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm-updates/InRelease  Unable to connect to deb.debian.org:http:
+W: Failed to fetch http://deb.debian.org/debian-security/dists/bookworm-security/InRelease  Unable to connect to deb.debian.org:http:
+W: Some index files failed to download. They have been ignored, or old ones used instead.
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libcurl4
+The following NEW packages will be installed:
+  curl libcurl4
+0 upgraded, 2 newly installed, 0 to remove and 16 not upgraded.
+Need to get 707 kB of archives.
+After this operation, 1361 kB of additional disk space will be used.
+Ign:1 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14
+Ign:2 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14
+Ign:1 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14
+Ign:2 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14
+Ign:1 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14
+Ign:2 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14
+Err:1 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14
+  Could not connect to debian.map.fastlydns.net:80 (151.101.22.132), connection timed out Unable to connect to deb.debian.org:http:
+Err:2 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14
+  Unable to connect to deb.debian.org:http:
+E: Failed to fetch http://deb.debian.org/debian/pool/main/c/curl/libcurl4_7.88.1-10%2bdeb12u14_amd64.deb  Could not connect to debian.map.fastlydns.net:80 (151.101.22.132), connection timed out Unable to connect to deb.debian.org:http:
+E: Failed to fetch http://deb.debian.org/debian/pool/main/c/curl/curl_7.88.1-10%2bdeb12u14_amd64.deb  Unable to connect to deb.debian.org:http:
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+/tests/test.sh: line 8: curl: command not found
+/tests/test.sh: line 10: /root/.local/bin/env: No such file or directory
+/tests/test.sh: line 19: uvx: command not found

@@ -1,0 +1,104 @@
+{
+    "id": "b3a55db7-0ef1-4d7c-9df3-1bb250a9183b",
+    "task_name": "terminal-bench/fix-git",
+    "trial_name": "fix-git__nCvpciu",
+    "trial_uri": "file:///work/jobs/g0-oracle/fix-git__nCvpciu",
+    "task_id": {
+        "path": "/cache/terminal-bench-2/2fd12b88aafdd04a52c298e3940bcb189f9766d6/fix-git"
+    },
+    "source": null,
+    "task_checksum": "020f98d84ec6fd1565f699cc3195250882da952f4e6566c4561a615ad120c9de",
+    "config": {
+        "task": {
+            "path": "/cache/terminal-bench-2/2fd12b88aafdd04a52c298e3940bcb189f9766d6/fix-git",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "fix-git__nCvpciu",
+        "trials_dir": "jobs/g0-oracle",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "oracle",
+            "import_path": null,
+            "model_name": null,
+            "base_url": null,
+            "model_api_key_name": null,
+            "model_api_format": null,
+            "skip_model_parsing": false,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {},
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "dbb5755f-a2c5-486c-a02b-919865c91594",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "oracle",
+        "version": "1.0.0",
+        "model_info": null
+    },
+    "agent_result": null,
+    "verifier_result": null,
+    "verifier_environment_mode": "shared",
+    "exception_info": {
+        "exception_type": "RuntimeError",
+        "exception_message": "Docker compose command failed for environment fix-git. Command: docker compose --project-name fix-git__ncvpciu__env --project-directory /cache/terminal-bench-2/2fd12b88aafdd04a52c298e3940bcb189f9766d6/fix-git/environment -f /tmp/tmptwd_3gus/fix-git__nCvpciu__env-docker-compose-resources.json -f /opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-prebuilt.yaml -f /tmp/tmp463cpr_9/docker-compose-environment.json -f /tmp/tmploa9vn6r/docker-compose-mounts.json up --detach --wait. Return code: 125. Stdout: unknown flag: --project-name\n\nUsage:  docker [OPTIONS] COMMAND [ARG...]\n\nRun 'docker --help' for more information\n. Stderr: None. ",
+        "exception_traceback": "Traceback (most recent call last):\n  File \"/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 606, in run\n    await self._prepare()\n  File \"/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 645, in _prepare\n    await self._setup_agent_environment()\n  File \"/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 1849, in _setup_agent_environment\n    await self._start_agent_environment()\n  File \"/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 1855, in _start_agent_environment\n    await asyncio.wait_for(\n  File \"/usr/lib/python3.12/asyncio/tasks.py\", line 520, in wait_for\n    return await fut\n           ^^^^^^^^^\n  File \"/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 1091, in start\n    await self._run_docker_compose_command([\"up\", *runtime.up_args])\n  File \"/opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 765, in _run_docker_compose_command\n    raise RuntimeError(\nRuntimeError: Docker compose command failed for environment fix-git. Command: docker compose --project-name fix-git__ncvpciu__env --project-directory /cache/terminal-bench-2/2fd12b88aafdd04a52c298e3940bcb189f9766d6/fix-git/environment -f /tmp/tmptwd_3gus/fix-git__nCvpciu__env-docker-compose-resources.json -f /opt/harbor-0.25.0/lib/python3.12/site-packages/harbor/environments/docker/docker-compose-prebuilt.yaml -f /tmp/tmp463cpr_9/docker-compose-environment.json -f /tmp/tmploa9vn6r/docker-compose-mounts.json up --detach --wait. Return code: 125. Stdout: unknown flag: --project-name\n\nUsage:  docker [OPTIONS] COMMAND [ARG...]\n\nRun 'docker --help' for more information\n. Stderr: None. \n",
+        "occurred_at": "2026-11-03T07:21:34.849057Z"
+    },
+    "started_at": "2026-11-03T07:21:34.734241Z",
+    "finished_at": "2026-11-03T07:21:34.930729Z",
+    "environment_setup": {
+        "started_at": "2026-11-03T07:21:34.771176Z",
+        "finished_at": "2026-11-03T07:21:34.846656Z"
+    },
+    "agent_setup": null,
+    "agent_execution": null,
+    "verifier": null,
+    "step_results": null
+}

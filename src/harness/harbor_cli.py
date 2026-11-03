@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated
 
@@ -19,8 +20,16 @@ harbor_app = typer.Typer(
 console = Console()
 
 
+_CONTROL = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def safe(text: object) -> str:
+    """Text from Harbor records is untrusted: no terminal escape or control sequences."""
+    return _CONTROL.sub("?", str(text))
+
+
 def _say(text: str) -> None:
-    console.print(text, markup=False, highlight=False)
+    console.print(safe(text), markup=False, highlight=False)
 
 
 @harbor_app.command()
@@ -79,3 +88,36 @@ def doctor(
         _say(f"{len(problems)} problem(s); nothing was run.")
         raise typer.Exit(1)
     _say("ready; nothing was run.")
+
+
+@harbor_app.command("import")
+def import_(
+    job_dir: Path,
+    out: Annotated[Path, typer.Option("--out", "-o", help="Parent of the run directory")] = Path(
+        "runs/harbor"
+    ),
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Rebuild an import whose job or importer changed")
+    ] = False,
+) -> None:
+    """Import a finished (or partial) Harbor 0.25.0 job directory. Offline; the job is only read."""
+    from harness.integrations.harbor.importer import HarborImportError, import_job
+
+    try:
+        res = import_job(job_dir, out, replace=replace)
+    except HarborImportError as exc:
+        _say(f"cannot import {job_dir}: {exc}")
+        raise typer.Exit(1) from None
+    rec = res["record"]
+    job, raw = rec["job"], rec["raw"]
+    _say(f"{res['action']}: {res['run_dir']}")
+    _say(
+        f"job {job['status']}: {job['n_trials_found']}/{job['n_total_trials']} trials, "
+        f"outcomes {job['outcomes']}, retries {job['n_retries']}"
+    )
+    _say(
+        f"snapshot {raw['dir']}/: {raw['n_files']} files, {raw['bytes']} bytes, "
+        f"{len(raw['skipped'])} skipped, {raw['redactions']} value(s) redacted"
+    )
+    for problem in job["problems"]:
+        _say(f"problem: {problem}")

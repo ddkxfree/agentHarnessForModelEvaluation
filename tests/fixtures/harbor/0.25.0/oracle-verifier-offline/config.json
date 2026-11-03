@@ -1,0 +1,10 @@
+{
+    "job_name": "g0-oracle",
+    "jobs_dir": "jobs",
+    "quiet": true,
+    "tasks": [
+        {
+            "path": "/cache/terminal-bench-2/2fd12b88aafdd04a52c298e3940bcb189f9766d6/fix-git"
+        }
+    ]
+}
