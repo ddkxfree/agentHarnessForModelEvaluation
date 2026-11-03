@@ -471,31 +471,92 @@ def prepare(cfg: HarborRunConfig, root: Path, config_path: Path) -> Path:
 # --- supervision --------------------------------------------------------------------------
 
 
-def _stop_group(pgid: int, proc: subprocess.Popen | None, grace_s: float) -> str:
-    """SIGTERM, then SIGKILL after ``grace_s``. Returns how the group ended."""
+def group_members(pgid: int) -> list[int] | None:
+    """Live (not zombie) processes of a process group; None if ``ps`` cannot tell."""
     try:
-        os.killpg(pgid, signal.SIGTERM)
+        out = subprocess.run(
+            ["ps", "-A", "-o", "pid=,pgid=,stat="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    members = []
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] == str(pgid) and not parts[2].startswith("Z"):
+            members.append(int(parts[0]))
+    return members
+
+
+def group_state(pgid: int) -> str:
+    """alive, gone or unknown. A signal probe alone is not enough: on macOS a group whose only
+    members are unreaped zombies answers EPERM, as does a live group of another user; Linux
+    accepts signals for zombies. The member list decides; without it EPERM is unknown."""
+    try:
+        os.killpg(pgid, 0)
+        probe = "ok"
     except ProcessLookupError:
+        return "gone"
+    except PermissionError:
+        probe = "denied"
+    members = group_members(pgid)
+    if members is None:
+        return "alive" if probe == "ok" else "unknown"
+    return "alive" if members else "gone"
+
+
+def _signal_group(pgid: int, sig: int) -> str:
+    try:
+        os.killpg(pgid, sig)
+        return "sent"
+    except ProcessLookupError:
+        return "gone"
+    except PermissionError:
+        return "denied"
+
+
+KILL_WAIT_S = 5.0  # after SIGKILL, for the group to disappear
+
+
+def _stop_group(pgid: int, proc: subprocess.Popen | None, grace_s: float) -> str:
+    """SIGTERM, then SIGKILL after ``grace_s``. Returns how the group ended; never raises for
+    a group that is gone or cannot be signalled (the caller checks ``group_state``)."""
+
+    def ended() -> bool:
+        if proc is not None:
+            return proc.poll() is not None
+        return group_state(pgid) == "gone"
+
+    sent = _signal_group(pgid, signal.SIGTERM)
+    if sent == "gone" or (sent == "denied" and ended()):
         return "already exited"
     deadline = time.monotonic() + grace_s
+    exited = False
     while time.monotonic() < deadline:
-        if proc is not None and proc.poll() is not None:
+        if ended():
+            exited = True
             break
-        if proc is None:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                break
         time.sleep(0.2)
-    try:
-        os.killpg(pgid, signal.SIGKILL)  # stragglers of the group, or Harbor itself
-        if proc is not None:
+    killed = _signal_group(pgid, signal.SIGKILL)  # stragglers of the group, or Harbor itself
+    if proc is not None:
+        try:
             proc.wait(timeout=10)
-        return (
-            "killed after grace period" if (proc is None or proc.returncode == -9) else "terminated"
-        )
-    except ProcessLookupError:
+        except subprocess.TimeoutExpired:
+            return "still running after SIGKILL"
+        return "killed after grace period" if proc.returncode == -9 else "terminated"
+    if exited:
         return "terminated"
+    kill_deadline = time.monotonic() + KILL_WAIT_S
+    while time.monotonic() < kill_deadline:
+        if ended():
+            return "killed after grace period"
+        time.sleep(0.2)
+    return f"still running after SIGKILL ({'permission denied' if killed == 'denied' else killed})"
 
 
 def _check_startable(run_dir: Path, kind: str, requested_ns: int) -> str | None:
@@ -756,7 +817,15 @@ def cancel(
             proc_state, ""
         )
         if proc_state == "alive":
-            how = _stop_group(int(proc["pgid"]), None, GRACE_S if grace_s is None else grace_s)
+            pgid = int(proc["pgid"])
+            how = _stop_group(pgid, None, GRACE_S if grace_s is None else grace_s)
+            group = group_state(pgid)
+            if group != "gone":
+                # Harbor may still own its containers: removing them under it would only race
+                state = _update_state(run_dir, cancel={"how": how, "group": group, "at": _now()})
+                why = (f"failed: Harbor's process group is {group} after {how}; containers "
+                       "left to it, status unchanged, request kept")  # fmt: skip
+                return {**state, "cancel": why}
         receipt = _receipt(run_dir) if (run_dir / RECEIPT).is_file() else {}
         job_dir = run_dir / receipt.get("job_dir", JOBS)
         cleanup = full_cleanup(job_dir, CLEANUP_S if cleanup_s is None else cleanup_s, 0.0)

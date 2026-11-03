@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+Harbor 第 44 轮补修（2026-11-03，分支 `cursor/harbor-review44-fixes-7316`）：H1a／H3a／H4a 已修复并有离线回归（EPERM 进程组判定、旧归档警告与 `harness harbor rebuild`、非文本逐字节脱敏）；基础回归 454 passed、4 skipped。待 Codex 复评，之后用户本机补 macOS 用例、Oracle／nop 与 Native Docker 回归，见 [45](progress/45-harbor-review44-fixes.md)。
+
 Harbor 补修复评（2026-11-03，master `a907ef3`，PR #26 已合并）：H2／H5／H6／H7 主路径回归通过；仍复现 H1a（macOS 孤儿取消 EPERM）、H3a（版本未变导致旧归档不重建）、H4a（非文本字节绕过脱敏），须再补修。真实环境验收仍待执行；用户提出优先推进 DeepSeek 小规模真实实验与网页结果展示，可与只读页面开发并行，见 [44](progress/44-harbor-fixes-review.md)。
 
 Harbor 第 42 轮补修（2026-11-03，分支 `cursor/harbor-review-fixes-7316`）：H1～H7 已修复并有离线回归（两种进程身份方法、取消先后、缺失 Trial 分母、脱敏与私有 `local/`、清理期限、配置拒绝）；基础回归 439 passed、4 skipped，静态检查通过。待 Codex 复评，之后由用户在本机补 Oracle=1／nop=0 与 Native Docker 回归，见 [43](progress/43-harbor-review-fixes.md)。

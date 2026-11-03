@@ -7,8 +7,9 @@ values redacted, indexed with sizes and hashes, and checked against the source o
 copying; a job that changed meanwhile does not produce a snapshot that claims to be complete.
 
 The normalized records (``trials.jsonl``) and the run record (``harbor_run.json``) can always
-be rebuilt from the snapshot. Importing the same job again is a no-op when nothing changed;
-a changed job or a newer importer needs ``replace=True``.
+be rebuilt from the snapshot (``rebuild``). Importing the same job again is a no-op only when
+both the snapshot and the importer version are unchanged; a changed job or a record built by
+another importer version is refused unless ``replace=True``, which rebuilds it.
 """
 
 from __future__ import annotations
@@ -29,7 +30,9 @@ from typing import Any
 from harness.integrations.harbor import JOB_LOCK_SCHEMA, PINNED_VERSION
 from harness.integrations.harbor.mapping import MAPPING_VERSION, map_trial, number_repeats
 
-IMPORTER_VERSION = 1
+# 2: planned trials without a directory are kept as ``missing`` (version 1 dropped them from
+# the denominator); records built by an older version are flagged and can be rebuilt
+IMPORTER_VERSION = 2
 RUN_RECORD = "harbor_run.json"
 TRIALS = "trials.jsonl"
 INDEX = "raw_index.json"
@@ -41,16 +44,22 @@ _SECRET_KEY = re.compile(
     r"(?i)(api[_-]?key|secret|password|passwd|authorization|access[_-]?token|auth[_-]?token"
     r"|^token$|^key$)"
 )
-_SECRET_TEXT = [
-    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
-    re.compile(r"\bhf_[A-Za-z0-9]{30,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{16,}"),
+_SECRET_TEXT_SOURCES = [
+    r"\bsk-[A-Za-z0-9_\-]{16,}",
+    r"\bgh[pousr]_[A-Za-z0-9]{30,}",
+    r"\bhf_[A-Za-z0-9]{30,}",
+    r"\bAKIA[0-9A-Z]{16}\b",
+    r"(?i)\bbearer\s+[A-Za-z0-9._\-]{16,}",
 ]
-_SECRET_ASSIGN = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)(\s*[=:]\s*[\"']?)([^\s\"',}]{8,})"
+_SECRET_ASSIGN_SOURCE = (
+    r"(?i)\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)"
+    r"(\s*[=:]\s*[\"']?)([^\s\"',}]{8,})"
 )
+_SECRET_TEXT = [re.compile(p) for p in _SECRET_TEXT_SOURCES]
+_SECRET_ASSIGN = re.compile(_SECRET_ASSIGN_SOURCE)
+# for bytes read as Latin-1: a non-ASCII byte must not count as a word character
+_SECRET_TEXT_ASCII = [re.compile(p, re.ASCII) for p in _SECRET_TEXT_SOURCES]
+_SECRET_ASSIGN_ASCII = re.compile(_SECRET_ASSIGN_SOURCE, re.ASCII)
 _ENV_SECRET_NAME = re.compile(r"(?i)(key|token|secret|password)")
 
 
@@ -89,13 +98,16 @@ def all_secrets(extra: Iterable[str] = ()) -> list[str]:
     return sorted(values, key=len, reverse=True)
 
 
-def redact_text(text: str, env_secrets: list[str]) -> tuple[str, int]:
+def redact_text(text: str, env_secrets: list[str], *, ascii: bool = False) -> tuple[str, int]:
+    patterns, assign = (
+        (_SECRET_TEXT_ASCII, _SECRET_ASSIGN_ASCII) if ascii else (_SECRET_TEXT, _SECRET_ASSIGN)
+    )
     n = 0
     for value in env_secrets:
         if value in text:
             n += text.count(value)
             text = text.replace(value, REDACTED)
-    for pattern in _SECRET_TEXT:
+    for pattern in patterns:
         text, k = pattern.subn(REDACTED, text)
         n += k
     k = 0
@@ -107,7 +119,7 @@ def redact_text(text: str, env_secrets: list[str]) -> tuple[str, int]:
         k += 1
         return f"{m.group(1)}{m.group(2)}{REDACTED}"
 
-    text = _SECRET_ASSIGN.sub(assignment, text)
+    text = assign.sub(assignment, text)
     return text, n + k
 
 
@@ -137,13 +149,15 @@ def _redact_json(value: Any, env_secrets: list[str]) -> tuple[Any, int]:
 
 
 def redact_bytes(name: str, data: bytes, env_secrets: list[str]) -> tuple[bytes, int]:
-    """The bytes to store and how many values were redacted. Binary data is kept as is."""
-    if b"\x00" in data[:8192]:
-        return data, 0
+    """The bytes to store and how many values were redacted. UTF-8 text is redacted as text
+    (JSON structurally); anything else (invalid UTF-8, NUL bytes, binary) byte for byte, so
+    no file is passed through unredacted because it is not clean text."""
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return data, 0
+        text = None
+    if text is None or "\x00" in text:
+        return _redact_raw_bytes(data, env_secrets)
     if name.endswith(".json"):
         try:
             parsed = json.loads(text)
@@ -154,6 +168,20 @@ def redact_bytes(name: str, data: bytes, env_secrets: list[str]) -> tuple[bytes,
             return (json.dumps(clean, indent=2).encode() if n else data), n
     clean, n = redact_text(text, env_secrets)
     return (clean.encode() if n else data), n
+
+
+def _redact_raw_bytes(data: bytes, env_secrets: list[str]) -> tuple[bytes, int]:
+    # Latin-1 maps every byte to one character and back, so the secrets' UTF-8 bytes and the
+    # ASCII credential patterns are found wherever they are; UTF-16 copies of the secrets too.
+    n = 0
+    for value in env_secrets:
+        wide, mark = value.encode("utf-16-le"), REDACTED.encode("utf-16-le")
+        if wide in data:
+            n += data.count(wide)
+            data = data.replace(wide, mark)
+    latin = [v.encode("utf-8").decode("latin-1") for v in env_secrets]
+    clean, k = redact_text(data.decode("latin-1"), latin, ascii=True)
+    return (clean.encode("latin-1") if k else data), n + k
 
 
 # --- scanning -----------------------------------------------------------------------------
@@ -523,9 +551,16 @@ def import_job(
         if same:
             return {"run_dir": run_dir, "action": "unchanged", "record": old}
         if not replace:
+            old_version = (old.get("importer") or {}).get("version")
+            if old_version != IMPORTER_VERSION:
+                raise ImportConflict(
+                    f"{run_dir} was built by importer version {old_version}, current is "
+                    f"{IMPORTER_VERSION}; its records may be wrong. Pass replace (--replace) to "
+                    "rebuild it from this job, or `harness harbor rebuild` from its snapshot"
+                )
             raise ImportConflict(
-                f"{run_dir} already holds an import of this job with different content or "
-                "importer version; pass replace to rebuild it"
+                f"{run_dir} already holds an import of this job with different content; "
+                "pass replace (--replace) to rebuild it"
             )
     action = "replaced" if existing.is_file() else "created"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -558,3 +593,41 @@ def verify_snapshot(run_dir: Path) -> list[str]:
         if _sha256_file(p) != e.get("stored_sha256", e["sha256"]):
             problems.append(f"modified {e['path']}")
     return problems
+
+
+def rebuild(run_dir: Path) -> dict[str, Any]:
+    """Rebuild the mapped records of an imported run from its own snapshot, with this
+    importer version; for archives whose Harbor job directory is no longer available. The
+    snapshot and its index stay as they are. Returns ``{"run_dir", "action", "record"}``."""
+    run_dir = Path(run_dir)
+    record = json.loads((run_dir / RUN_RECORD).read_text())
+    problems = verify_snapshot(run_dir)
+    if problems:
+        raise HarborImportError(
+            f"{run_dir}: snapshot does not match its index ({', '.join(problems[:5])}); not rebuilt"
+        )
+    raw = run_dir / record["raw"]["dir"]
+    config, lock = check_job(raw)
+    files = {
+        e["path"]: _read_regular(raw / e["path"])
+        for e in json.loads((run_dir / INDEX).read_text())
+        if "skipped" not in e
+    }
+    trials, job = build_records(raw, files, config, lock)
+    previous = record.get("importer")
+    record["importer"] = {"version": IMPORTER_VERSION, "mapping_version": MAPPING_VERSION}
+    record["job"] = job
+    record["rebuilt"] = {"at": _now(), "from": "snapshot", "previous_importer": previous}
+    _write_atomic(run_dir / TRIALS, "".join(json.dumps(t) + "\n" for t in trials))
+    _write_atomic(run_dir / RUN_RECORD, json.dumps(record, indent=2))
+    return {"run_dir": run_dir, "action": "rebuilt", "record": record}
+
+
+def stale_warning(record: dict[str, Any]) -> str | None:
+    version = (record.get("importer") or {}).get("version")
+    if version == IMPORTER_VERSION:
+        return None
+    return (
+        f"records built by importer version {version}, current is {IMPORTER_VERSION}; counts "
+        "may be wrong. Rebuild with `harness harbor rebuild <run_dir>`"
+    )

@@ -123,6 +123,27 @@ def import_(
         _say(f"problem: {problem}")
 
 
+@harbor_app.command()
+def rebuild(run_dir: Path) -> None:
+    """Rebuild an imported run's records from its own redacted snapshot with the current
+    importer (e.g. after an importer fix). Offline; the snapshot is checked, not changed."""
+    from harness.integrations.harbor.importer import HarborImportError
+    from harness.integrations.harbor.importer import rebuild as rebuild_records
+
+    try:
+        res = rebuild_records(run_dir)
+    except (HarborImportError, FileNotFoundError) as exc:
+        _say(f"cannot rebuild {run_dir}: {exc}")
+        raise typer.Exit(1) from None
+    job = res["record"]["job"]
+    previous = (res["record"]["rebuilt"]["previous_importer"] or {}).get("version")
+    _say(f"rebuilt {run_dir} (importer {previous} -> {res['record']['importer']['version']})")
+    _say(
+        f"job {job['status']}: {job['n_trials_found']}/{job['n_total_trials']} trials, "
+        f"outcomes {job['outcomes']}"
+    )
+
+
 def show_harbor(run_dir: Path, *, outcome: str | None, sample: str | None, n: int) -> None:
     import json
 
@@ -141,7 +162,7 @@ def show_harbor(run_dir: Path, *, outcome: str | None, sample: str | None, n: in
         usage["coverage"],
     )
     console.print(table)
-    if warning := view.completeness_warning():
+    for warning in view.warnings():
         _say(f"WARNING {warning}")
     _say(f"provenance: {json.dumps(view.provenance, sort_keys=True)}")
     shown = 0
@@ -209,7 +230,7 @@ def _print_final(run_dir: Path, state: dict) -> None:
         view = open_run(run_dir)
         _say(f"trials: {len(view.samples)}, outcomes {view.outcomes()}, "
              f"usage reported {view.usage()['coverage']}")  # fmt: skip
-        if warning := view.completeness_warning():
+        for warning in view.warnings():
             _say(f"WARNING {warning}")
     elif state.get("import_error"):
         _say(f"no trial records: {state['import_error']}")
@@ -285,7 +306,7 @@ def cancel(
         raise typer.Exit(1) from None
     _say(f"cancel: {state.get('cancel')}")
     _print_final(run_dir, state)
-    if str(state.get("cancel", "")).startswith(("refused", "requested")):
+    if str(state.get("cancel", "")).startswith(("refused", "requested", "failed")):
         raise typer.Exit(1)
 
 

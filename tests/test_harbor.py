@@ -1099,3 +1099,216 @@ def test_a_config_harbor_rejects_never_starts_a_job(harbor_env):
     calls = (harbor_env.bin / "calls.jsonl").read_text().splitlines()
     assert all("--print-config" in json.loads(c)["argv"] or json.loads(c)["argv"] == ["--version"]
                for c in calls)  # fmt: skip
+
+
+# --- review 44: H1a process-group probe, H3a outdated archives, H4a non-text redaction ----
+
+
+def _sigterm_unreaped():
+    """An orphan-like child that got SIGTERM and is now a zombie nobody has reaped yet."""
+    import signal
+
+    proc = _spawn_orphan()
+    os.kill(proc.pid, signal.SIGTERM)
+    for _ in range(100):
+        if Path(f"/proc/{proc.pid}/stat").is_file():
+            if Path(f"/proc/{proc.pid}/stat").read_text().split(")")[1].split()[0] == "Z":
+                break
+        time.sleep(0.05)
+    return proc
+
+
+def test_group_state_uses_the_member_list_not_only_the_signal_probe(monkeypatch):
+    from harness.integrations.harbor import process as hp
+
+    live = _spawn_orphan()
+    zombie = _sigterm_unreaped()
+    try:
+        assert hp.group_state(live.pid) == "alive"
+        assert hp.group_state(zombie.pid) == "gone"  # Linux accepts signals for zombies
+        real = os.killpg
+
+        def macos_probe(pgid, sig):
+            real(pgid, sig)  # ProcessLookupError when the group is really gone
+            if sig == 0:
+                raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(os, "killpg", macos_probe)
+        assert hp.group_state(live.pid) == "alive"
+        assert hp.group_state(zombie.pid) == "gone"
+        monkeypatch.setattr(hp, "group_members", lambda pgid: None)
+        assert hp.group_state(live.pid) == "unknown"  # EPERM and no member list: not "gone"
+    finally:
+        for p in (live, zombie):
+            p.kill()
+            p.wait()
+    monkeypatch.undo()
+    assert hp.group_state(live.pid) == "gone"
+
+
+def test_orphan_cancel_survives_eperm_from_an_unreaped_group(harbor_env, identity_method,
+                                                             monkeypatch):  # fmt: skip
+    """macOS: after SIGTERM, probing a group whose leader is an unreaped zombie gives EPERM."""
+    from harness.integrations.harbor import process as hp
+
+    real = os.killpg
+
+    def macos_probe(pgid, sig):
+        real(pgid, sig)
+        if sig == 0:
+            raise PermissionError(1, "Operation not permitted")
+
+    proc = _spawn_orphan()
+    try:
+        run_dir = _fake_orphaned_run(harbor_env, proc)
+        monkeypatch.setattr(os, "killpg", macos_probe)
+        res = hp.cancel(run_dir, wait_s=0, grace_s=5)
+        assert res["status"] == "cancelled" and res["cancel"] == "terminated"
+        assert "cleanup" in hp.read_state(run_dir)["cancel"]
+        assert proc.wait(timeout=10) is not None
+    finally:
+        proc.kill()
+
+
+def test_an_unsignallable_group_is_not_reported_cancelled(harbor_env, monkeypatch):
+    from harness.integrations.harbor import process as hp
+
+    def denied(pgid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    proc = _spawn_orphan()
+    try:
+        run_dir = _fake_orphaned_run(harbor_env, proc)
+        monkeypatch.setattr(hp, "KILL_WAIT_S", 0.3)
+        monkeypatch.setattr(os, "killpg", denied)
+        res = hp.cancel(run_dir, wait_s=0, grace_s=0.3)
+        assert res["cancel"].startswith("failed: Harbor's process group is alive")
+        state = hp.read_state(run_dir)
+        assert state["status"] == "running" and state["cancel"]["group"] == "alive"
+        assert "permission denied" in state["cancel"]["how"]
+        assert proc.poll() is None and (run_dir / hp.CANCEL).exists()
+        assert not (harbor_env.bin / "docker_calls.jsonl").exists()  # containers left to Harbor
+        monkeypatch.undo()
+        assert hp.status(run_dir)["status"] == "orphaned"
+    finally:
+        proc.kill()
+
+
+def _old_archive(tmp_path):
+    """An import made by importer version 1: the planned trial without a directory was left
+    out, so 1 of 1 looked correct."""
+    job = job_copy(tmp_path, "oracle-verifier-offline")
+    (job / "result.json").unlink()
+    edit_json(job / "fix-git__Bu66kU2" / "result.json",
+              lambda r: r["verifier_result"].update(rewards={"reward": 1.0}))  # fmt: skip
+    edit_json(job / "lock.json", lambda lock: lock["trials"].append(lock["trials"][0]))
+    run = hi.import_job(job, tmp_path / "out")["run_dir"]
+    kept = [t for t in trials_of(run) if t["outcome"] != "missing"]
+    (run / "trials.jsonl").write_text("".join(json.dumps(t) + "\n" for t in kept))
+
+    def as_v1(r):
+        r["importer"]["version"] = 1
+        r["job"].update(n_total_trials=1, n_missing=0, outcomes={"correct": 1})
+
+    edit_json(run / "harbor_run.json", as_v1)
+    return job, run
+
+
+def test_an_outdated_archive_is_flagged_and_not_reported_unchanged(tmp_path):
+    from harness.results import open_run
+
+    job, run = _old_archive(tmp_path)
+    view = open_run(run)
+    assert view.accuracy()["accuracy"] == 1.0
+    assert any("importer version 1" in w for w in view.warnings())
+    out = CliRunner().invoke(app, ["show", str(run)])
+    assert "WARNING records built by importer version 1" in " ".join(out.output.split())
+    with pytest.raises(hi.ImportConflict, match="importer version 1"):
+        hi.import_job(job, tmp_path / "out")
+    res = hi.import_job(job, tmp_path / "out", replace=True)
+    assert res["action"] == "replaced"
+    view = open_run(run)
+    assert view.accuracy()["n"] == 2 and view.accuracy()["accuracy"] == 0.5
+    assert not any("importer version" in w for w in view.warnings())
+    assert hi.import_job(job, tmp_path / "out")["action"] == "unchanged"
+
+
+def test_an_outdated_archive_is_rebuilt_from_its_snapshot(tmp_path):
+    from harness.results import open_run
+
+    job, run = _old_archive(tmp_path)
+    shutil.rmtree(job)  # the Harbor job directory is gone; the snapshot is all there is
+    index_before = (run / "raw_index.json").read_text()
+    out = CliRunner().invoke(app, ["harbor", "rebuild", str(run)])
+    assert out.exit_code == 0, out.output
+    assert "importer 1 -> 2" in out.output and "1/2 trials" in out.output
+    view = open_run(run)
+    assert view.accuracy()["accuracy"] == 0.5 and view.outcomes() == {"correct": 1, "missing": 1}
+    assert [w for w in view.warnings() if "importer" in w] == []
+    record = json.loads((run / "harbor_run.json").read_text())
+    assert record["rebuilt"]["previous_importer"]["version"] == 1
+    assert (run / "raw_index.json").read_text() == index_before and hi.verify_snapshot(run) == []
+
+
+def test_a_tampered_snapshot_is_not_rebuilt(tmp_path):
+    _, run = _old_archive(tmp_path)
+    (run / "raw" / "lock.json").write_text("{}")
+    out = CliRunner().invoke(app, ["harbor", "rebuild", str(run)])
+    assert out.exit_code == 1 and "modified lock.json" in out.output
+
+
+MARKER = "synthetic-marker-7f3a91"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"\xff diagnostic " + MARKER.encode() + b"\n",
+        MARKER.encode() + b" \xfe\xff trailing",
+        b"\x00\x01binary" + MARKER.encode() + b"\x00",
+        b"\x00" * 10 + MARKER.encode("utf-16-le") + b"\x00",
+        b"\xffsk-" + b"b" * 24 + b"\xff" + b" API_TOKEN=" + b"z" * 12,
+    ],
+    ids=["invalid-utf8-middle", "invalid-utf8-start", "nul", "utf16", "patterns"],
+)
+def test_non_text_bytes_are_redacted_too(data):
+    stored, n = hi.redact_bytes("agent/blob.bin", data, [MARKER])
+    assert n >= 1
+    assert MARKER.encode() not in stored and MARKER.encode("utf-16-le") not in stored
+    assert b"sk-bbbb" not in stored and b"zzzzzzzz" not in stored
+
+
+def test_redacted_bytes_keep_everything_else():
+    data = b"\x00\xff head " + MARKER.encode() + b" tail \xfe"
+    stored, n = hi.redact_bytes("x.bin", data, [MARKER])
+    assert n == 1 and stored == b"\x00\xff head [REDACTED] tail \xfe"
+    assert hi.redact_bytes("x.bin", b"\x00\xff nothing here", [MARKER]) == (
+        b"\x00\xff nothing here",
+        0,
+    )
+
+
+def test_a_non_utf8_log_is_published_redacted(tmp_path):
+    from harness.integrations.harbor import process as hp
+
+    run_dir = tmp_path / "run"
+    (run_dir / "local").mkdir(parents=True)
+    (run_dir / hp.RAW_LOG).write_bytes(b"\xff diagnostic " + MARKER.encode() + b"\n")
+    info = hp._publish_log(run_dir, [MARKER])
+    assert MARKER.encode() not in (run_dir / "harbor.log").read_bytes()
+    assert info["redacted"] == 1 and info["sha256"] != info["stored_sha256"]
+
+
+def test_binary_native_files_are_redacted_in_the_shared_snapshot(tmp_path):
+    job = job_copy(tmp_path, "oracle-verifier-offline")
+    blob = job / "fix-git__Bu66kU2" / "agent" / "dump.bin"
+    blob.write_bytes(b"\x00\xff" + MARKER.encode() + b"\x00")
+    run = hi.import_job(job, tmp_path / "out", secrets=[MARKER])["run_dir"]
+    stored = run / "raw" / "fix-git__Bu66kU2" / "agent" / "dump.bin"
+    assert MARKER.encode() not in stored.read_bytes()
+    entry = next(e for e in json.loads((run / "raw_index.json").read_text())
+                 if e["path"].endswith("dump.bin"))  # fmt: skip
+    assert (
+        entry["redacted"] == 1 and entry["sha256"] == hashlib.sha256(blob.read_bytes()).hexdigest()
+    )
+    assert hi.verify_snapshot(run) == []
