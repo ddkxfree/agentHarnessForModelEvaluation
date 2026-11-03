@@ -23,6 +23,10 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+开发交接（2026-11-03）：用户确认 Native／Harbor 双执行入口方向，新增 [Harbor 集成指南](harbor-integration-plan.md)。保留 Native，Harbor 使用独立环境与固定发行版 CLI，G0～G6 连续开发自验后统一 PR 评审。当前仅完成计划，尚未安装／实现／验收 Harbor；见 [39](progress/39-harbor-integration-plan.md)。本批次优先完成执行基础整合，阶段 11～20 的研究范围继续保留。
+
+开发预算补充（2026-11-03）：指南 2.1～2.4 增加单批 180 分钟、同故障最多 3 次执行、环境准备累计等待 25 分钟、命令超时／资源清理、上下文恢复保留预算和到限交付规则。属于开发操作约束，不是 Cursor 账户 token 硬限额，未新增运行时实现；见 [40](progress/40-harbor-development-bounds.md)。
+
 真实 TB 单题模型分析（2026-10-31）：用户运行 DeepSeek Flash＋BasicAgent 解 fix-git，找到悬空提交，merge 后出现未解决冲突；累计 30,032 tokens 达到 30,000 预算而停止，评分 1 项通过、1 项失败，reward=0。约 94% 用量来自输入；下一次建议仅增加 token 预算做对照，尚未执行，见 [38](progress/38-fix-git-token-limit-analysis.md)。
 
 终端操作体验（2026-10-29）：run／show 汇总改为中英文两列布局，长字段换行，非零异常自动显示；show --all-outcomes 可展开全部零计数类型。历史单题记录已验证显示，本机 352 passed、24 skipped，静态检查通过；本轮无新模型调用，见 [37](progress/37-readable-cli-summary.md)。

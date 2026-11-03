@@ -18,6 +18,8 @@
 
 从模型问答到工具 Agent，再到 TB、SWE 和 JobBench 的逐步练习见 [实际运行计划](docs/first-run-plan.md)。JobBench 尚未接入；第一轮先做无模型的环境与 Oracle 检查。
 
+下一开发批次见 [Harbor 双执行入口指南](docs/harbor-integration-plan.md)：Native 与 Harbor 隔离执行、共享结果分析。当前仅有计划，Harbor 后端尚未实现；文档中的新命令暂不可运行。
+
 ## 快速开始
 
 ```bash
