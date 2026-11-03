@@ -23,6 +23,8 @@
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
+Harbor 独立评审（2026-11-03，master `c3540ec`，PR #25 已合并）：主体入口已实现，仍发现 H1～H7（macOS 进程身份、取消交接、缺失 Trial 分母、归档凭据、清理时限、零预算与保留环境配置）。本机基础回归 409 passed、2 failed、10 skipped，静态检查通过；本轮不运行真实 Harbor／Docker 验收或模型调用。须先补修后复评，再补 Oracle／nop 与 Native Docker 验收，详见 [42](progress/42-harbor-backend-review.md)。下文“待评审”是此前交接状态。
+
 Harbor 双入口第一批（2026-11-03，分支 `codex/harbor-backend`）：固定 Harbor 0.25.0 独立安装，新增 `harness harbor doctor／run／import／status／cancel／resume`，show／diff／report 统一读取两种来源，Native 不变。本机真实运行 nop 对照、取消与恢复通过且无残留容器；fix-git Oracle 满分因本机 compose 网络无法出网未验收（blocked），真实模型示例未运行。待 Codex 评审，见 [41](progress/41-harbor-backend.md)。
 
 开发交接（2026-11-03）：用户确认 Native／Harbor 双执行入口方向，新增 [Harbor 集成指南](harbor-integration-plan.md)。保留 Native，Harbor 使用独立环境与固定发行版 CLI，G0～G6 连续开发自验后统一 PR 评审。当前仅完成计划，尚未安装／实现／验收 Harbor；见 [39](progress/39-harbor-integration-plan.md)。本批次优先完成执行基础整合，阶段 11～20 的研究范围继续保留。
