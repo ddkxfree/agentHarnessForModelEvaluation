@@ -38,11 +38,17 @@ if args[0] == "run":
                           "agent": {"kwargs": {"api_key": os.environ.get("SOME_KEY", "")}}}))
         sys.exit(0)
     job = Path(opt("--jobs-dir")) / opt("--job-name")
+    key = os.environ.get("SOME_KEY", "<unset>")
+    print(f"using key {key}", flush=True)
+    print(f"auth header Bearer {key}-tail sk-{'a' * 24}", file=sys.stderr, flush=True)
     if mode == "crash_before_job":
         print("boom")
         sys.exit(2)
     shutil.copytree(here / "fixture", job)
-    (here / "secret_seen").write_text(os.environ.get("SOME_KEY", "<unset>"))
+    (here / "secret_seen").write_text(key)
+    trial = job / "fix-git__Bu66kU2"
+    (trial / "agent" / "session.log").write_text(f"export SOME_KEY={key}\n")
+    (trial / "exception.txt").write_text(f"RuntimeError: rejected credential {key}\n")
     if mode == "ok":
         sys.exit(0)
     (job / "result.json").unlink()
@@ -71,13 +77,19 @@ sys.exit(64)
 """
 
 FAKE_DOCKER = r"""
-import json, sys
+import json, sys, time
 from pathlib import Path
 
 here = Path(__file__).parent
 args = sys.argv[1:]
 with (here / "docker_calls.jsonl").open("a") as f:
     f.write(json.dumps(args) + "\n")
+mode = (here / "docker_mode").read_text().strip() if (here / "docker_mode").exists() else "ok"
+if mode == "hang":
+    time.sleep(60)
+if mode == "rm_fails" and args[0] in ("rm", "network") and args[1] != "ls":
+    print("permission denied", file=sys.stderr)
+    sys.exit(1)
 store = here / ("networks" if args[0] == "network" else "containers")
 lines = store.read_text().splitlines() if store.exists() else []
 if args[:2] == ["ps", "-a"] or args[:2] == ["network", "ls"]:
