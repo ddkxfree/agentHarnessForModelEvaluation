@@ -94,6 +94,12 @@ class Limits(_Strict):
     wall_clock_s: float = Field(default=3600.0, gt=0)
     # Harbor's own per-phase timeouts come from each task; this scales them all
     timeout_multiplier: float = Field(default=1.0, gt=0)
+    # checking the resolved Harbor config (``--print-config``) before anything starts
+    prepare_s: float = Field(default=120.0, gt=0)
+    # after SIGTERM on a stop, before the process group is killed
+    stop_grace_s: float = Field(default=60.0, ge=0)
+    # one deadline for every Docker call that removes or checks this job's resources
+    cleanup_s: float = Field(default=120.0, gt=0)
     # Not enforceable through the pinned CLI; setting them is an error, not a silent no-op.
     token_limit: int | None = None
     cost_limit_usd: float | None = None
@@ -101,7 +107,8 @@ class Limits(_Strict):
 
     @model_validator(mode="after")
     def _unsupported(self) -> Limits:
-        asked = [n for n in ("token_limit", "cost_limit_usd", "max_steps") if getattr(self, n)]
+        names = ("token_limit", "cost_limit_usd", "max_steps")
+        asked = [n for n in names if getattr(self, n) is not None]
         if asked:
             raise ValueError(
                 f"{', '.join(asked)} cannot be enforced through the Harbor {PINNED_VERSION} CLI; "
@@ -114,7 +121,19 @@ class Environment(_Strict):
     type: Literal["docker"] = "docker"
     # extra compose files merged into each trial's environment (``--extra-docker-compose``)
     extra_docker_compose: list[Path] = Field(default_factory=list)
+    # The harness removes this job's containers whenever the job ends, so keeping them
+    # (Harbor's --no-delete) cannot be honoured and is refused rather than ignored.
     delete: bool = True
+
+    @field_validator("delete")
+    @classmethod
+    def _delete(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError(
+                "environment.delete=false is not supported: the harness always removes this "
+                "job's containers when the job ends; run Harbor directly to keep them"
+            )
+        return v
 
 
 class HarborRunConfig(_Strict):
@@ -183,8 +202,17 @@ def capabilities(cfg: HarborRunConfig) -> list[dict[str, str]]:
     """How each limit and count is applied, for display and for the run manifest."""
     m = cfg.limits.timeout_multiplier
     return [
+        {"limit": "prepare_s", "value": str(cfg.limits.prepare_s),
+         "how": "enforced by harness: --print-config check before the job starts"},
         {"limit": "wall_clock_s", "value": str(cfg.limits.wall_clock_s),
          "how": "enforced by harness: Harbor process group stopped, this job's containers removed"},
+        {"limit": "stop_grace_s", "value": str(cfg.limits.stop_grace_s),
+         "how": "enforced by harness: SIGTERM, then SIGKILL of the process group"},
+        {"limit": "cleanup_s", "value": str(cfg.limits.cleanup_s),
+         "how": "enforced by harness: one deadline for all Docker cleanup calls; "
+                "what is not confirmed in time is reported as unknown"},
+        {"limit": "environment", "value": "deleted",
+         "how": "this job's containers and networks are always removed when it ends"},
         {"limit": "phase timeouts", "value": f"task.toml x {m}",
          "how": "enforced by Harbor (environment build, agent setup, agent, verifier)"},
         {"limit": "attempts", "value": str(cfg.attempts), "how": "enforced by Harbor (-k)"},
@@ -211,7 +239,7 @@ def build_argv(
         "--max-retries", str(cfg.max_retries),
         "--timeout-multiplier", str(cfg.limits.timeout_multiplier),
         "--env", cfg.environment.type,
-        "--delete" if cfg.environment.delete else "--no-delete",
+        "--delete",
     ]  # fmt: skip
     for f in cfg.environment.extra_docker_compose:
         argv += ["--extra-docker-compose", str(_abs(root, f))]
