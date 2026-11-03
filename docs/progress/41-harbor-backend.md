@@ -68,8 +68,9 @@
 
 ## 检查
 
-- 定向：`tests/test_harbor.py` 58 passed（无网络、无 Harbor、无 Docker）。
-- 全量与静态检查、Native Docker 回归结果见 PR 说明与下方补记。
+- 定向：`tests/test_harbor.py` 59 passed（无网络、无 Harbor、无 Docker）。
+- 基础依赖环境（未安装 Harbor、未装可选依赖）`uv run pytest -q --ignore tests/test_docker_sandbox.py`：416 passed、4 skipped（minisweagent／swebench 可选依赖缺失）；`ruff check`、`ruff format --check` 通过。
+- Native Docker 回归 `tests/test_docker_sandbox.py`（限时 900 秒）：前 7 项通过，含三道自建终端任务 Oracle 全过、不操作全失败、沙箱隔离／超时清理；1 项跳过（mini-swe-agent 未安装）；`test_terminal_bench_oracle_passes_and_doing_nothing_fails[oracle]` 的验证器在默认 bridge 上 `apt-get update` 卡住，整体超时（exit 124），其后 5 项未运行。超时遗留的 1 个本次测试沙箱容器已按 ID 删除。
 
 ## 未完成与后续
 
