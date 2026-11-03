@@ -47,5 +47,6 @@
 | [41](41-harbor-backend.md) | Harbor 0.25.0 双执行入口：独立 venv＋哈希锁、doctor／run／import／status／cancel／resume，统一只读视图；真实 nop、取消、恢复通过，Oracle 满分因本机 compose 网络无出网未验收 | 工程集成，待评审 |
 | [42](42-harbor-backend-review.md) | PR #25 已合入后独立评审：H1～H7 待补修；macOS 孤儿取消、启动前取消、缺失样本分母和日志凭据可复现；409 passed、2 failed、10 skipped | Harbor 补修评审 |
 | [43](43-harbor-review-fixes.md) | H1～H7 补修：跨平台进程身份与未知时拒绝、带时间戳的取消在锁内核对、缺失 Trial 计入分母并警告、日志与原生文件脱敏且原件只留 local/、清理单一期限、零预算与 delete=false 拒绝；439 passed、4 skipped；真实 Oracle／nop 待本机 | Harbor 补修，待复评 |
+| [44](44-harbor-fixes-review.md) | PR #26 复评：H1a macOS 退出探测异常、H3a 旧归档未重建、H4a 非文本日志绕过脱敏待补；讨论 DeepSeek 小规模实验与只读网页展示 | Harbor 复评与展示方向 |
 
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。
