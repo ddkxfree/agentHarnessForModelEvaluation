@@ -22,9 +22,7 @@ def fake_harbor(tmp_path: Path, version: str = PINNED_VERSION, body: str = "") -
     exe.parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / "venv" / "pyvenv.cfg").write_text("home = /usr/bin\nversion_info = 3.12.3\n")
     exe.write_text(
-        "#!/bin/sh\n"
-        f'if [ "$1" = "--version" ]; then echo {version}; exit 0; fi\n'
-        f"{body}\n"
+        f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo {version}; exit 0; fi\n{body}\n'
     )
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     return exe

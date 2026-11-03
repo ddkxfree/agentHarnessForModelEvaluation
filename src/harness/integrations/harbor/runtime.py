@@ -86,7 +86,8 @@ def _venv_info(executable: Path) -> tuple[Path | None, str | None, str | None]:
         for k, v in (line.split("=", 1) for line in cfg.read_text().splitlines() if "=" in line)
     }
     python = fields.get("version_info") or fields.get("version") or None
-    records = sorted(venv.glob(f"lib/python*/site-packages/harbor-{PINNED_VERSION}.dist-info/RECORD"))
+    dist_info = f"harbor-{PINNED_VERSION}.dist-info"
+    records = sorted(venv.glob(f"lib/python*/site-packages/{dist_info}/RECORD"))
     digest = hashlib.sha256(records[0].read_bytes()).hexdigest() if records else None
     return venv, python, digest
 

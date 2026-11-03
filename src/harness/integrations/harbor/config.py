@@ -192,7 +192,7 @@ def capabilities(cfg: HarborRunConfig) -> list[dict[str, str]]:
         {"limit": "max_retries", "value": str(cfg.max_retries),
          "how": "enforced by Harbor (-r); retries are recorded apart from attempts"},
         {"limit": "token / cost / steps", "value": "-",
-         "how": "not supported by the pinned CLI; refused if configured, usage recorded if reported"},
+         "how": "not supported by the pinned CLI; refused if set, usage recorded if reported"},
     ]  # fmt: skip
 
 
