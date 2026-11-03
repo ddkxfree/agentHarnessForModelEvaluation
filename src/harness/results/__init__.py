@@ -54,6 +54,13 @@ class RunView:
     samples: list[SampleView]
     # what describes the system under test, for diffing two runs of the same backend
     config: dict[str, Any] = field(default_factory=dict)
+    # problems with the records themselves, e.g. built by an outdated importer
+    record_warnings: list[str] = field(default_factory=list)
+
+    def warnings(self) -> list[str]:
+        """Everything a reader of the scores must see first."""
+        w = self.completeness_warning()
+        return [*self.record_warnings, *([w] if w else [])]
 
     def outcomes(self) -> dict[str, int]:
         return dict(sorted(Counter(s.outcome for s in self.samples).items()))
@@ -126,7 +133,10 @@ def open_run(run_dir: Path) -> RunView:
 
 
 def _harbor(run_dir: Path) -> RunView:
+    from harness.integrations.harbor.importer import stale_warning
+
     record = json.loads((run_dir / HARBOR_RECORD).read_text())
+    stale = stale_warning(record)
     samples = []
     receipt = record.get("run") or {}
     fingerprint = (receipt.get("task") or {}).get("fingerprint")
@@ -181,6 +191,7 @@ def _harbor(run_dir: Path) -> RunView:
             "tasks": record.get("tasks"),
             "run": receipt.get("config"),
         },
+        record_warnings=[stale] if stale else [],
     )
 
 
