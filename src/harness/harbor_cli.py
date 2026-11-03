@@ -141,6 +141,8 @@ def show_harbor(run_dir: Path, *, outcome: str | None, sample: str | None, n: in
         usage["coverage"],
     )
     console.print(table)
+    if warning := view.completeness_warning():
+        _say(f"WARNING {warning}")
     _say(f"provenance: {json.dumps(view.provenance, sort_keys=True)}")
     shown = 0
     for s in view.samples:
@@ -207,6 +209,8 @@ def _print_final(run_dir: Path, state: dict) -> None:
         view = open_run(run_dir)
         _say(f"trials: {len(view.samples)}, outcomes {view.outcomes()}, "
              f"usage reported {view.usage()['coverage']}")  # fmt: skip
+        if warning := view.completeness_warning():
+            _say(f"WARNING {warning}")
     elif state.get("import_error"):
         _say(f"no trial records: {state['import_error']}")
     _say(f"run directory: {run_dir}")
@@ -239,7 +243,14 @@ def run(
         f"Harbor job directory {run_dir / receipt['job_dir']}"
     )
     env = {**hp.base_env(), **hp.agent_env(cfg)}
-    state = hp.supervise(run_dir, receipt["argv"], env, wall_clock_s=cfg.limits.wall_clock_s)
+    try:
+        state = hp.supervise(
+            run_dir, receipt["argv"], env, wall_clock_s=cfg.limits.wall_clock_s,
+            grace_s=cfg.limits.stop_grace_s, cleanup_s=cfg.limits.cleanup_s,
+        )  # fmt: skip
+    except hp.HarborRunError as exc:
+        _say(f"not started: {exc}")
+        raise typer.Exit(1) from None
     _print_final(run_dir, state)
     if state.get("status") != "completed":
         raise typer.Exit(1)
@@ -254,8 +265,8 @@ def status(run_dir: Path) -> None:
 
     state = hp.status(run_dir)
     shown = {k: state.get(k) for k in ("status", "stop_reason", "exit_code", "supervised",
-                                       "harbor_process_alive", "trial_dirs", "harbor_stats",
-                                       "imported", "note")}  # fmt: skip
+                                       "harbor_process", "cancel_pending", "trial_dirs",
+                                       "harbor_stats", "imported", "note")}  # fmt: skip
     _say(json.dumps(shown, indent=2))
 
 
@@ -274,6 +285,8 @@ def cancel(
         raise typer.Exit(1) from None
     _say(f"cancel: {state.get('cancel')}")
     _print_final(run_dir, state)
+    if str(state.get("cancel", "")).startswith(("refused", "requested")):
+        raise typer.Exit(1)
 
 
 @harbor_app.command()
@@ -281,13 +294,15 @@ def resume(run_dir: Path) -> None:
     """Continue an interrupted or cancelled job with Harbor's own resume (completed trials are
     kept, cancelled ones are run again)."""
     import json
+    import time
 
     from harness.integrations.harbor import process as hp
     from harness.integrations.harbor.config import HarborRunConfig
     from harness.integrations.harbor.runtime import HarborError
 
+    requested_ns = time.time_ns()  # a cancel after this moment stops the resume
     state = hp.status(run_dir)
-    if state["status"] not in ("cancelled", "interrupted", "timed_out", "failed"):
+    if state["status"] not in hp.RESUMABLE:
         _say(f"cannot resume a run that is {state['status']}")
         raise typer.Exit(1)
     try:
@@ -296,8 +311,10 @@ def resume(run_dir: Path) -> None:
         argv, _ = hp.resume_argv(run_dir)
         env = {**hp.base_env(), **hp.agent_env(cfg)}
         state = hp.supervise(
-            run_dir, argv, env, wall_clock_s=cfg.limits.wall_clock_s, kind="resume"
-        )
+            run_dir, argv, env, wall_clock_s=cfg.limits.wall_clock_s, kind="resume",
+            requested_ns=requested_ns, grace_s=cfg.limits.stop_grace_s,
+            cleanup_s=cfg.limits.cleanup_s,
+        )  # fmt: skip
     except (HarborError, hp.HarborRunError) as exc:
         _say(f"not resumed: {exc}")
         raise typer.Exit(1) from None
