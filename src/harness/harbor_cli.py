@@ -121,3 +121,70 @@ def import_(
     )
     for problem in job["problems"]:
         _say(f"problem: {problem}")
+
+
+def show_harbor(run_dir: Path, *, outcome: str | None, sample: str | None, n: int) -> None:
+    import json
+
+    from harness.results import open_run
+
+    view = open_run(run_dir)
+    acc, usage = view.accuracy(), view.usage()
+    table = Table(title=f"{safe(view.run_id)} (harbor, {safe(view.status)})")
+    for col in ("samples", "scored", "correct", "outcomes", "usage reported"):
+        table.add_column(col)
+    table.add_row(
+        str(acc["n"]),
+        str(acc["n_scored"]),
+        str(acc["n_correct"]),
+        safe(view.outcomes()),
+        usage["coverage"],
+    )
+    console.print(table)
+    _say(f"provenance: {json.dumps(view.provenance, sort_keys=True)}")
+    shown = 0
+    for s in view.samples:
+        if sample is not None:
+            if sample in (s.sample_id, s.key, s.native.get("trial_name")):
+                _say(json.dumps(s.native, indent=2))
+            continue
+        if outcome is None or s.outcome != outcome or shown >= n:
+            continue
+        shown += 1
+        exc = s.native.get("exception") or {}
+        _say(
+            f"{s.key} [{s.native.get('trial_name')}] {s.outcome} rewards={s.scores} "
+            f"error={exc.get('type')}/{exc.get('category')}@{exc.get('phase')} "
+            f"note={s.native.get('score_note')}"
+        )
+
+
+def diff_any(run_a: Path, run_b: Path, *, show_ids: int) -> None:
+    from harness.results import open_run
+    from harness.results.analysis import diff_views
+
+    d = diff_views(open_run(run_a), open_run(run_b))
+    console.rule(safe(f"{d['a']['run_id']} ({d['a']['backend']})  vs  "
+                      f"{d['b']['run_id']} ({d['b']['backend']})"))  # fmt: skip
+    for note in d["notes"]:
+        _say(f"note: {note}")
+    if d["config_changes"]:
+        table = Table(title="configuration changes")
+        for col in ("key", "a", "b"):
+            table.add_column(col, overflow="fold")
+        for key, va, vb in d["config_changes"]:
+            table.add_row(safe(key), safe(repr(va)), safe(repr(vb)))
+        console.print(table)
+    for side in ("a", "b"):
+        acc = d["accuracy"][side]
+        _say(
+            f"{side}: {acc['n_correct']}/{acc['n']} correct ({acc['n_scored']} scored), "
+            f"outcomes {d['outcomes'][side]}, usage reported {d['usage'][side]['coverage']}"
+        )
+    p = d["paired"]
+    _say(
+        f"paired on {p['n']} scored samples: b better {p['b_better']}, worse {p['b_worse']}, "
+        f"ties {p['ties']}, enough for claims: {p['enough_samples_for_claims']}"
+    )
+    for key, (oa, ob) in list(d["flips"].items())[:show_ids]:
+        _say(f"  {key}: {oa} -> {ob}")

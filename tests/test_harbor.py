@@ -419,3 +419,124 @@ def test_import_command_reports_and_refuses(tmp_path):
     assert "created" in out.output and "outcomes {'error': 1}" in out.output
     out = CliRunner().invoke(app, ["harbor", "import", str(tmp_path), "-o", str(tmp_path / "o")])
     assert out.exit_code == 1 and "not a Harbor job" in " ".join(out.output.split())
+
+
+# --- G2: one read layer for both backends -------------------------------------------------
+
+
+def native_run(tmp_path: Path) -> Path:
+    import asyncio
+
+    from conftest import make_task, question_number
+
+    from harness.core.model import MockModel
+    from harness.core.runner import run_eval
+    from harness.core.types import GenerateConfig
+
+    return asyncio.run(
+        run_eval(
+            MockModel(lambda m: f"The answer is {2 * question_number(m)}", name="mock-model"),
+            [(make_task(), GenerateConfig())],
+            output_dir=tmp_path / "runs",
+        )
+    )
+
+
+def test_native_runs_read_unchanged_through_the_view(tmp_path):
+    from harness.results import backend_of, open_run
+
+    run = native_run(tmp_path)
+    view = open_run(run)
+    assert backend_of(run) == "native" and view.backend == "native"
+    assert view.accuracy()["n_correct"] == 6 and view.outcomes() == {"correct": 6}
+    assert view.usage()["coverage"] == "6/6"
+    native_show = CliRunner().invoke(app, ["show", str(run)])
+    assert native_show.exit_code == 0 and "toy" in native_show.output
+
+
+def test_harbor_view_keeps_unknowns(tmp_path):
+    from harness.results import open_run
+
+    job = job_copy(tmp_path, "oracle-env-error")
+    view = open_run(hi.import_job(job, tmp_path / "out")["run_dir"])
+    (s,) = view.samples
+    assert view.backend == "harbor" and s.outcome == "error" and s.correct is None
+    assert s.error_type == "RuntimeError" and s.error_category == "unknown"
+    assert s.input_tokens is None and s.usage_status == "not_applicable"
+    assert view.accuracy() == {"n": 1, "n_scored": 0, "n_correct": 0, "accuracy": 0.0}
+
+
+def test_usage_totals_are_none_unless_every_model_sample_reported(tmp_path):
+    from harness.results import open_run
+
+    job = job_copy(tmp_path, "oracle-verifier-offline")
+
+    def model_agent(r):
+        r["agent_info"] = {"name": "terminus-2", "version": "2", "model_info": {"name": "m"}}
+
+    edit_json(job / "fix-git__Bu66kU2" / "result.json", model_agent)
+    usage = open_run(hi.import_job(job, tmp_path / "out")["run_dir"]).usage()
+    assert usage == {"samples_with_model": 1, "reported": 0, "coverage": "0/1",
+                     "input_tokens": None, "output_tokens": None, "cost_usd": None}  # fmt: skip
+
+
+def test_show_report_and_diff_read_harbor_runs(tmp_path):
+    a = hi.import_job(job_copy(tmp_path, "oracle-verifier-offline"), tmp_path / "o")["run_dir"]
+    b = hi.import_job(job_copy(tmp_path, "oracle-env-error"), tmp_path / "o")["run_dir"]
+    r = CliRunner()
+    out = r.invoke(app, ["show", str(a), "--outcome", "wrong"])
+    assert out.exit_code == 0 and "fix-git__Bu66kU2" in out.output
+    out = r.invoke(app, ["show", str(b), "--sample", "terminal-bench/fix-git"])
+    assert out.exit_code == 0 and "RuntimeError" in out.output
+    out = r.invoke(app, ["report", str(b)])
+    assert out.exit_code == 0
+    md = (b / "report.md").read_text()
+    assert "| error | 1 |" in md and "RuntimeError in phase environment_setup" in md
+    out = r.invoke(app, ["diff", str(a), str(b)])
+    assert out.exit_code == 0 and "wrong -> error" in out.output
+
+
+def test_mixed_backend_diff_is_a_system_comparison(tmp_path):
+    from harness.results import open_run
+    from harness.results.analysis import diff_views
+
+    native = open_run(native_run(tmp_path))
+    harbor = open_run(
+        hi.import_job(job_copy(tmp_path, "oracle-verifier-offline"), tmp_path / "o")["run_dir"]
+    )
+    d = diff_views(native, harbor)
+    assert any("system difference, not an engine difference" in n for n in d["notes"])
+    assert d["config_changes"] == [] and d["paired"]["n"] == 0
+    assert len(d["unpaired"]) == 7
+    out = CliRunner().invoke(app, ["diff", str(native.path), str(harbor.path)])
+    assert out.exit_code == 0 and "native" in out.output and "harbor" in out.output
+
+
+def test_same_name_different_task_content_is_not_paired():
+    from harness.results import RunView, SampleView
+    from harness.results.analysis import diff_views
+
+    def view(fp, outcome):
+        s = SampleView("t/x", "t", 0, "completed", outcome, outcome == "correct", None,
+                       usage_status="not_applicable",
+                       task_identity={"harness_fingerprint": fp})  # fmt: skip
+        return RunView("harbor", "r", Path("."), "completed", {}, [s])
+
+    d = diff_views(view("aaa", "correct"), view("bbb", "wrong"))
+    assert d["task_identity"] == {"t/x": "different"} and d["flips"] == {}
+    assert d["paired"]["n"] == 0
+    d = diff_views(view("aaa", "correct"), view("aaa", "wrong"))
+    assert d["flips"] == {"t/x": ("correct", "wrong")} and d["paired"]["b_worse"] == 1
+
+
+def test_untrusted_text_is_shown_without_control_sequences(tmp_path):
+    job = job_copy(tmp_path, "oracle-env-error")
+    edit_json(
+        job / "fix-git__nCvpciu" / "result.json",
+        lambda r: r["exception_info"].update(exception_message="\x1b]0;pwned\x07\x1b[31mred"),
+    )
+    run = hi.import_job(job, tmp_path / "o")["run_dir"]
+    out = CliRunner().invoke(app, ["show", str(run), "--sample", "terminal-bench/fix-git"])
+    assert "\x1b" not in out.output and "\x07" not in out.output
+    CliRunner().invoke(app, ["report", str(run)])
+    assert "\x1b" not in (run / "report.md").read_text()
