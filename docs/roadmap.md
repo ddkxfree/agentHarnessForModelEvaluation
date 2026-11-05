@@ -25,7 +25,7 @@
 
 Harbor 第 46 轮补修（2026-11-03，分支 `cursor/harbor-review46-fixes-7316`）：H4b 已修复，用真实旧导入器产物验证 rebuild 后公开快照不含合成凭据，迁移快照保留分享前审核标记；D1 补交进度 45。基础回归 459 passed、4 skipped。待 Codex 复评，之后用户本机补 Oracle／nop 与 Native Docker 回归，见 [47](progress/47-harbor-review46-fixes.md)。
 
-Web App 原型设计（2026-11-05）：明确工作台、评测集、实验中心、轨迹分析、实验对比、模型与连接六个一级模块，提供演示数据边界、验收要求和三组 Cursor 提示词。仅完成设计文档，前端尚未实现，未改变 Harbor 真实验收状态；见 [原型设计](web-app-prototype.md) 与 [47](progress/47-web-app-prototype-plan.md)。
+Web App 演示原型（2026-11-05，分支 `codex/web-app-prototype`）：`frontend/` 实现工作台、评测集、实验中心、轨迹分析、实验对比、模型与连接。轨迹分析保留一级入口。数据为演示，不调用模型，不连接 Harness／Harbor。单元测试 6 项通过，生产构建通过；浏览器点击验收因偏离原型而中止，未改变 Harbor 真实验收状态。见 [48](progress/48-web-app-prototype.md)。此前仅完成设计，见 [原型设计](web-app-prototype.md) 与 [47](progress/47-web-app-prototype-plan.md)。
 
 Harbor 第 44 轮补修复评（2026-11-03，master `f154ce6`，PR #27 已合并）：macOS 专项 91 passed、5 skipped；基础离线回归 443 passed、9 skipped、6 deselected，静态检查通过。H1a／H3a／H4a 原主路径通过；仍需补 H4b（rebuild 保留旧版未脱敏快照但清除版本警告）及 D1（进度 45 文件未提交）。可继续无模型验收和只读展示开发，旧归档公开前须补迁移；本轮没有真实 Harbor／Docker 验收或模型调用，见 [46](progress/46-harbor-review44-fixes-review.md)。
 
