@@ -1208,6 +1208,7 @@ def _old_archive(tmp_path):
 
     def as_v1(r):
         r["importer"]["version"] = 1
+        del r["raw"]["redaction"]  # version 1 did not record how raw/ was redacted
         r["job"].update(n_total_trials=1, n_missing=0, outcomes={"correct": 1})
 
     edit_json(run / "harbor_run.json", as_v1)
@@ -1246,7 +1247,10 @@ def test_an_outdated_archive_is_rebuilt_from_its_snapshot(tmp_path):
     assert view.accuracy()["accuracy"] == 0.5 and view.outcomes() == {"correct": 1, "missing": 1}
     assert [w for w in view.warnings() if "importer" in w] == []
     record = json.loads((run / "harbor_run.json").read_text())
-    assert record["rebuilt"]["previous_importer"]["version"] == 1
+    assert record["rebuilt"]["previous"] == {"importer": record["rebuilt"]["previous"]["importer"],
+                                             "redaction": 1}  # fmt: skip
+    assert record["rebuilt"]["previous"]["importer"]["version"] == 1
+    # nothing to redact again in this snapshot: index and files unchanged
     assert (run / "raw_index.json").read_text() == index_before and hi.verify_snapshot(run) == []
 
 
@@ -1312,3 +1316,120 @@ def test_binary_native_files_are_redacted_in_the_shared_snapshot(tmp_path):
         entry["redacted"] == 1 and entry["sha256"] == hashlib.sha256(blob.read_bytes()).hexdigest()
     )
     assert hi.verify_snapshot(run) == []
+
+
+# --- review 46: H4b an outdated snapshot is redacted again, not just relabelled -----------
+
+LEAK = "synthetic-leak-5b2e8c1d"
+
+
+def _old_archive_with_leak(tmp_path, monkeypatch):
+    """What importer version 1 produced: a binary file with a credential stored unredacted."""
+    job = job_copy(tmp_path, "oracle-verifier-offline")
+    blob = job / "fix-git__Bu66kU2" / "agent" / "dump.bin"
+    blob.write_bytes(b"\x00\xff core " + LEAK.encode() + b" \xfe\x00")
+    original_sha = hashlib.sha256(blob.read_bytes()).hexdigest()
+    with monkeypatch.context() as m:
+        m.setattr(hi, "_redact_raw_bytes", lambda data, secrets: (data, 0))  # version 1 rules
+        run = hi.import_job(job, tmp_path / "out", secrets=[LEAK])["run_dir"]
+
+    def as_v1(r):
+        r["importer"]["version"] = 1
+        del r["raw"]["redaction"]
+
+    edit_json(run / "harbor_run.json", as_v1)
+    shutil.rmtree(job)  # only the archive is left
+    assert LEAK.encode() in (run / "raw" / "fix-git__Bu66kU2" / "agent" / "dump.bin").read_bytes()
+    return run, original_sha
+
+
+def _shared_bytes(run):
+    return b"".join(
+        p.read_bytes() for p in run.rglob("*") if p.is_file() and "local" not in p.parts
+    )
+
+
+def test_an_unredacted_old_snapshot_is_flagged_as_not_shareable(tmp_path, monkeypatch):
+    from harness.results import open_run
+
+    run, _ = _old_archive_with_leak(tmp_path, monkeypatch)
+    warnings = open_run(run).warnings()
+    assert any("do not share" in w and "redaction version 1" in w for w in warnings)
+    out = CliRunner().invoke(app, ["show", str(run)])
+    assert "do not share it" in " ".join(out.output.split())
+
+
+def test_rebuild_redacts_an_old_snapshot_again(tmp_path, monkeypatch):
+    from harness.results import open_run
+
+    run, original_sha = _old_archive_with_leak(tmp_path, monkeypatch)
+    monkeypatch.setenv("SYNTH_LEAK", LEAK)
+    out = CliRunner().invoke(app, ["harbor", "rebuild", str(run), "--secret-env", "SYNTH_LEAK"])
+    assert out.exit_code == 0, out.output
+    assert "redaction 1 -> 2" in out.output and "redacted again: 1 value(s)" in out.output
+    assert LEAK.encode() not in _shared_bytes(run)
+    entry = next(e for e in json.loads((run / "raw_index.json").read_text())
+                 if e["path"].endswith("dump.bin"))  # fmt: skip
+    stored = (run / "raw" / "fix-git__Bu66kU2" / "agent" / "dump.bin").read_bytes()
+    assert entry["sha256"] == original_sha and entry["redacted"] == 1
+    assert entry["stored_sha256"] == hashlib.sha256(stored).hexdigest()
+    assert stored == b"\x00\xff core [REDACTED] \xfe\x00"
+    assert hi.verify_snapshot(run) == []
+    record = json.loads((run / "harbor_run.json").read_text())
+    assert record["raw"]["redaction"]["migrated_from"] == 1
+    assert (
+        record["raw"]["index_sha256"]
+        == hashlib.sha256((run / "raw_index.json").read_bytes()).hexdigest()
+    )
+    view = open_run(run)
+    assert view.accuracy()["n"] == 1 and view.outcomes() == {"wrong": 1}
+    warnings = view.warnings()
+    assert not any("do not share" in w for w in warnings)
+    assert any("review raw/ before sharing" in w for w in warnings)  # stays: migration is partial
+    assert not list(run.glob(".raw-*"))
+
+
+def test_a_secret_unknown_at_migration_stays_flagged(tmp_path, monkeypatch):
+    from harness.results import open_run
+
+    run, _ = _old_archive_with_leak(tmp_path, monkeypatch)
+    res = hi.rebuild(run)  # the value is not known now: it cannot be found
+    assert res["record"]["raw"]["redaction"]["redacted_at_migration"] == 0
+    assert any("review raw/ before sharing" in w for w in open_run(run).warnings())
+
+
+def test_an_old_snapshot_is_not_reimported_as_unchanged(tmp_path, monkeypatch):
+    job = job_copy(tmp_path, "oracle-verifier-offline")
+    (job / "fix-git__Bu66kU2" / "agent" / "dump.bin").write_bytes(b"\x00" + LEAK.encode())
+    with monkeypatch.context() as m:
+        m.setattr(hi, "_redact_raw_bytes", lambda data, secrets: (data, 0))
+        run = hi.import_job(job, tmp_path / "out", secrets=[LEAK])["run_dir"]
+    edit_json(run / "harbor_run.json", lambda r: r["raw"].update(redaction={"version": 1}))
+    with pytest.raises(hi.ImportConflict, match="redaction version 1"):
+        hi.import_job(job, tmp_path / "out", secrets=[LEAK])
+    res = hi.import_job(job, tmp_path / "out", secrets=[LEAK], replace=True)
+    assert res["action"] == "replaced" and LEAK.encode() not in _shared_bytes(run)
+
+
+def test_rebuild_of_a_harness_run_uses_the_private_originals(harbor_env):
+    from harness.integrations.harbor import process as hp
+    from harness.results import open_run
+
+    run_dir, _ = start(harbor_env("ok"))
+    blob = run_dir / "raw" / "fix-git__Bu66kU2" / "agent" / "session.log"
+    blob.write_text("export SOME_KEY=the-secret-value-123\n")  # as an old snapshot had it
+
+    def as_v1(r):
+        r["importer"]["version"] = 1
+        del r["raw"]["redaction"]
+
+    edit_json(run_dir / "harbor_run.json", as_v1)
+    res = hi.rebuild(run_dir)
+    record = res["record"]
+    assert record["rebuilt"]["from"] == "original job"
+    assert record["raw"]["redaction"] == {"version": 2, "from": "original files"}
+    assert record["state"]["status"] == "completed" and record["run"]["argv"]
+    assert record["source"]["job_dir"].startswith("local/")
+    assert_no_secret_outside_local(run_dir)
+    assert hi.verify_snapshot(run_dir) == [] and open_run(run_dir).warnings() == []
+    assert hp.read_state(run_dir)["status"] == "completed"
