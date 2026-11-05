@@ -228,7 +228,7 @@ export function TraceDetail() {
     <Page
       kicker="轨迹分析 · 演示记录"
       title={task?.name ?? sample.taskId}
-      lede="只展示已记录的消息和行动，没有内部思考。日志回放不能恢复执行现场。逐步用量未记录时，右侧是样本最终汇总，不是实时指标。"
+      lede="沿时间线查看行动，打开独立记录核对完整证据。"
       actions={
         <>
           <Link className="button secondary" to={back}>
@@ -327,12 +327,12 @@ export function TraceDetail() {
         {(!narrow || tab === "timeline") && (
           <section className="pane">
             <h2>时间线</h2>
-            <Timeline steps={sample.steps} query={query} expanded={expanded} />
+            <Timeline steps={sample.steps} query={query} expanded={expanded} recordBase={tracePath(experiment.id, sample.id)} />
           </section>
         )}
         {(!narrow || tab === "score") && (
           <aside className="pane">
-            <h2>评分证据</h2>
+            <h2>评分证据</h2><div className="record-links"><Link to={`${tracePath(experiment.id, sample.id)}/evidence`}>完整证据 →</Link><Link target="_blank" rel="noopener noreferrer" to={`${tracePath(experiment.id, sample.id)}/evidence`}>新标签页 ↗</Link></div>
             <p>{sample.evidence || "未记录"}</p>
             <p>
               结束原因：{sample.endReason} <StatusPill value={sample.outcome} />

@@ -19,7 +19,7 @@ import { summarize } from "../lib/metrics";
 import { useExperiment, useStudio } from "../state/Studio";
 import type { DraftInput, Outcome } from "../types";
 
-export function ExperimentDetail() {
+export function ExperimentDetail({ report = false }: { report?: boolean }) {
   const { experimentId } = useParams();
   const experiment = useExperiment(experimentId);
   const { start, cancel } = useStudio();
@@ -49,25 +49,27 @@ export function ExperimentDetail() {
   return (
     <Page
       kicker="实验中心 · 演示"
-      title={experiment.name}
+      title={report ? `${experiment.name} · 完整报告` : experiment.name}
       lede="进度、样本和用量来自同一份演示状态。回放轨迹不会恢复执行现场。"
       actions={
         <>
-          {experiment.status === "draft" ? (
+          {!report && experiment.status === "draft" ? (
             <button type="button" onClick={() => start(experiment.id)}>
               开始模拟运行
             </button>
           ) : null}
-          {experiment.status === "running" ? (
+          {!report && experiment.status === "running" ? (
             <button type="button" onClick={() => cancel(experiment.id)}>
               取消
             </button>
           ) : null}
-          {experiment.status === "cancelled" ? (
+          {!report && experiment.status === "cancelled" ? (
             <button type="button" disabled>
               已取消，不能续跑
             </button>
           ) : null}
+          <Link to={report ? `/experiments/${experiment.id}` : `/experiments/${experiment.id}/report`}>{report ? "← 返回实验" : "查看完整报告 →"}</Link>
+          <Link target="_blank" rel="noopener noreferrer" to={`/experiments/${experiment.id}/report`}>新标签页打开 ↗</Link>
           <Link className="button secondary" to={`/compare?a=${experiment.id}`}>
             去对比
           </Link>
@@ -75,7 +77,8 @@ export function ExperimentDetail() {
       }
     >
       {summary.warning ? <Notice>{summary.warning}</Notice> : null}
-      <p className="fine">已取消的运行不能从中断处继续。需要再看一遍模拟，请新建实验。公开导出未实现。</p>
+      <p className="fine"><Link to="/help/metrics">指标定义与统计口径 ↗</Link></p>
+      {report ? <>
       <dl className="facts">
         <div>
           <dt>评测集</dt>
@@ -154,6 +157,7 @@ export function ExperimentDetail() {
           note={STEP_DEFINITION}
         />
       </div>
+      </> : <div className="metric-grid overview-metrics"><Metric label="成功率" value={formatPercent(summary.successRate)} note={`${summary.correct} / ${summary.planned} 计划样本`} /><Metric label="输入 token" value={usageTotal(summary.tokens.inputTokens, summary.tokens.costKind)} note={modelLabel(experiment.modelId)} /><Metric label="墙钟时长" value={formatSeconds(summary.time.wallClockS)} note="本次实验" /><Metric label="环境异常 / 预算耗尽" value={`${summary.envErrors} / ${summary.budget}`} note="与模型失败分别统计" /></div>}
       <section>
         <h2>进度</h2>
         <p className="progress-label" aria-live="polite">
@@ -183,7 +187,7 @@ export function ExperimentDetail() {
         </div>
         <p className="fine">单位：样本。范围：本实验计划样本 {summary.planned}。颜色和文字一起表示结果，没有置信区间。</p>
       </section>
-      <section>
+      {report ? <section>
         <h2>事件</h2>
         <ul className="events">
           {experiment.events.map((item) => (
@@ -194,6 +198,7 @@ export function ExperimentDetail() {
           ))}
         </ul>
       </section>
+      : null}
       <section>
         <h2>样本</h2>
         {experiment.samples.length === 0 ? (
@@ -235,7 +240,7 @@ export function ExperimentDetail() {
           </div>
         )}
       </section>
-      {experiment.status === "draft" ? (
+      {!report && experiment.status === "draft" ? (
         <section>
           <h2>修改配置</h2>
           <ExperimentForm experiment={experiment} initial={draft} />

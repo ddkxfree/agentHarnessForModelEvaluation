@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState } from "react";
 import type { Step } from "../types";
 import { visibleText } from "../lib/text";
@@ -7,10 +8,12 @@ export function Timeline({
   steps,
   query,
   expanded,
+  recordBase,
 }: {
   steps: Step[];
   query: string;
   expanded: boolean;
+  recordBase?: string;
 }) {
   const [full, setFull] = useState<Step | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -66,6 +69,7 @@ export function Timeline({
               <pre className={expanded || !long ? "log" : "log clipped"}>
                 <Highlight text={text} query={query} />
               </pre>
+              {recordBase ? <div className="record-links"><Link to={`${recordBase}/steps/${encodeURIComponent(item.id)}`}>完整记录 →</Link><Link target="_blank" rel="noopener noreferrer" to={`${recordBase}/steps/${encodeURIComponent(item.id)}`}>新标签页 ↗</Link></div> : null}
               {long ? (
                 <button type="button" className="text-button" onClick={() => setFull(item)}>
                   全屏查看

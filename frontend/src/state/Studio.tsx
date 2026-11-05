@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { seedExperiments } from "../data/seed";
 import { validateDraft } from "../lib/draft";
 import { cancelExperiment, createDraft, startExperiment, tick, updateDraft } from "../lib/simulate";
@@ -29,7 +29,7 @@ function strip(experiments: Experiment[]): Experiment[] {
 
 function load(): Experiment[] {
   try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) ?? sessionStorage.getItem(STORAGE_KEY);
     if (!raw) return seedExperiments();
     const parsed = JSON.parse(raw) as Experiment[];
     if (!Array.isArray(parsed) || parsed.length === 0) return seedExperiments();
@@ -42,12 +42,36 @@ function load(): Experiment[] {
 export function StudioProvider({ children }: { children: ReactNode }) {
   const [experiments, setExperiments] = useState<Experiment[]>(load);
 
+  const stored = useRef<string | null>(null);
   useEffect(() => {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(strip(experiments)));
+    const raw = JSON.stringify(strip(experiments));
+    if (raw === stored.current) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, raw);
+      stored.current = raw;
+    } catch {
+      console.warn("无法保存演示数据；当前页面仍可使用，但关闭后可能丢失。");
+    }
   }, [experiments]);
 
   useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY || !event.newValue || event.newValue === stored.current) return;
+      try {
+        const parsed = JSON.parse(event.newValue) as Experiment[];
+        if (!Array.isArray(parsed) || !parsed.every(item => item.id && Array.isArray(item.samples))) return;
+        stored.current = event.newValue;
+        setExperiments(strip(parsed));
+      } catch { /* Ignore malformed storage from another tab. */ }
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
+      // Reports and evidence tabs observe; they never drive simulated execution.
+      if (document.visibilityState !== "visible" || /\/report$|\/evidence$|\/steps\/|^\/help/.test(window.location.pathname)) return;
       const now = Date.now();
       setExperiments((current) => {
         let changed = false;
@@ -95,7 +119,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         );
       },
       reset() {
-        sessionStorage.removeItem(STORAGE_KEY);
+        try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* Storage may be unavailable. */ }
         setExperiments(seedExperiments());
       },
     };

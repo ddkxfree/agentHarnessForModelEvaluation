@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 
 const NAV = [
   { to: "/", label: "工作台", end: true },
@@ -27,7 +27,7 @@ export function Shell() {
             </NavLink>
           ))}
         </nav>
-        <p className="side-note">演示数据。不调用模型，不启动 Docker，不产生费用。</p>
+        <div className="side-note"><Link to="/help/metrics">指标与使用说明 ↗</Link><p>演示空间 · 本地保存<br />不调用模型，不产生费用。</p></div>
       </aside>
       <main id="content">
         <Outlet />

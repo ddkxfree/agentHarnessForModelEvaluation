@@ -2,7 +2,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { formatPercent, formatPoints, formatSeconds, modelLabel } from "../lib/format";
 import { compareExperiments, summarize } from "../lib/metrics";
 import { useStudio } from "../state/Studio";
-import { Empty, Notice, Page } from "../components/ui";
+import { Empty, Metric, Notice, Page } from "../components/ui";
 import { tracePath } from "./Traces";
 import type { HeldOut, PairItem } from "../lib/metrics";
 
@@ -16,7 +16,7 @@ const HELD_LABEL: Record<HeldOut["reason"], string> = {
   unmatched: "只在一侧",
 };
 
-export function Compare() {
+export function Compare({ report = false }: { report?: boolean }) {
   const { experiments } = useStudio();
   const [params, setParams] = useSearchParams();
   const fallbackLeft = experiments.find((item) => item.id === "exp-ds-basic-30k")?.id ?? experiments[0]?.id ?? "";
@@ -41,15 +41,14 @@ export function Compare() {
   return (
     <Page
       kicker="实验对比"
-      title="两次运行的差异"
-      lede="成功率之差用百分点。任务集、Agent 或预算不同时，页面会写出具体差异，不会把变化都算到模型上。"
-      actions={
-        <button type="button" disabled>
-          导出公开榜
-        </button>
-      }
+      title={report ? "完整对比报告" : "看清变化，再深入证据"}
+      lede={report ? "配置、消耗、能力标签与逐题证据，完整保留。" : "先看效果与消耗，再查看配置差异和配对轨迹。"}
+      actions={<Link to="/help/metrics">统计口径 ↗</Link>}
     >
-      <p className="fine">导出公开榜未实现。公开成绩需要单独的数据许可和发布授权，原型不发布。</p>
+      <div className="report-links">
+        <Link to={`${report ? '/compare' : '/compare/report'}?a=${encodeURIComponent(leftId)}&b=${encodeURIComponent(rightId)}`}>{report ? '← 返回对比总览' : '查看完整对比报告 →'}</Link>
+        <Link target="_blank" rel="noopener noreferrer" to={`/compare/report?a=${encodeURIComponent(leftId)}&b=${encodeURIComponent(rightId)}`}>新标签页打开 ↗</Link>
+      </div>
       <div className="toolbar">
         <label>
           左侧
@@ -78,7 +77,20 @@ export function Compare() {
       {comparison && left && right && leftSummary && rightSummary ? (
         <>
           <Notice>{comparison.notes.join(" ")}</Notice>
-          <section>
+          {!report ? <>
+            <div className="metric-grid overview-metrics">
+              <Metric label="成功率变化" value={formatPoints(comparison.percentagePoints)} note={`${formatPercent(comparison.leftRate)} → ${formatPercent(comparison.rightRate)}`} />
+              <Metric label="失败 → 成功" value={String(comparison.buckets.failSuccess.length)} note="匹配且可比较的样本" />
+              <Metric label="成功 → 失败" value={String(comparison.buckets.successFail.length)} note="重点回溯这些任务" />
+              <Metric label="输入 token · 左 / 右" value={`${tokenCell(leftSummary.tokens.inputTokens, comparison.tokensComparable)} / ${tokenCell(rightSummary.tokens.inputTokens, comparison.tokensComparable)}`} note="完整用量与费用见报告" />
+            </div>
+            <section className="summary-surface"><div className="section-heading"><h2>值得关注的样本</h2><Link to={`/compare/report?a=${encodeURIComponent(leftId)}&b=${encodeURIComponent(rightId)}#configuration`}>全部配置差异 →</Link></div>
+              <PairLane title="失败 → 成功" items={comparison.buckets.failSuccess} leftId={left.id} rightId={right.id} />
+              <PairLane title="成功 → 失败" items={comparison.buckets.successFail} leftId={left.id} rightId={right.id} />
+              <p className="fine">另有 {comparison.held.length} 个样本单独列出；完整分组和排除原因见报告。</p>
+            </section>
+          </> : <>
+          <section id="configuration">
             <h2>配置差异</h2>
             {comparison.configChanges.length === 0 ? (
               <p>没有配置字段差异。</p>
@@ -213,6 +225,7 @@ export function Compare() {
           ) : (
             <Empty title="评测集不同，没有逐题配对。" />
           )}
+          </>}
         </>
       ) : null}
     </Page>

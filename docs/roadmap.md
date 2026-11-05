@@ -21,6 +21,8 @@
 
 ## 当前状态
 
+Web App 页面分层优化（2026-11-05）：工作台与实验对比改为摘要入口，新增完整实验／对比报告、独立日志／评分证据和指标说明页，保留六模块；演示数据本地持久化并支持标签页同步。前端 10 项测试与生产构建通过，浏览器工具超时，视觉和真实点击验收待用户预览。无模型调用或后端接入，见 [49](progress/49-web-report-navigation.md)。
+
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。
 
 Harbor 第 46 轮补修（2026-11-03，分支 `cursor/harbor-review46-fixes-7316`）：H4b 已修复，用真实旧导入器产物验证 rebuild 后公开快照不含合成凭据，迁移快照保留分享前审核标记；D1 补交进度 45。基础回归 459 passed、4 skipped。待 Codex 复评，之后用户本机补 Oracle／nop 与 Native Docker 回归，见 [47](progress/47-harbor-review46-fixes.md)。
