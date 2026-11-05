@@ -20,6 +20,8 @@
 
 Harbor 双执行入口见 [Harbor 双执行入口指南](docs/harbor-integration-plan.md)：Native 与 Harbor 隔离执行、共享结果分析。后端已实现（[41](docs/progress/41-harbor-backend.md)），第 42 轮评审问题已补修（[43](docs/progress/43-harbor-review-fixes.md)）；真实 Oracle／nop 验收待本机执行。
 
+演示用的 Web 工作台在独立目录 [frontend/](frontend/README.md)，不进入 Python 包，也不连接这里的评测后端。启动方式见该目录的 README。
+
 ## 快速开始
 
 ```bash
