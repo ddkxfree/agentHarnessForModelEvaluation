@@ -52,4 +52,6 @@
 | [46](46-harbor-review44-fixes-review.md) | PR #27 复评：macOS Harbor 专项 91 passed、5 skipped；原三项主路径通过，旧快照 rebuild 脱敏迁移 H4b 和未提交的第 45 轮文档 D1 待补 | Harbor 补修复评 |
 | [47](47-harbor-review46-fixes.md) | H4b 快照脱敏版本单独记录，rebuild 优先从 local/ 原件重导入、否则重新脱敏旧快照（保留原始哈希、更新存储哈希），旧快照标“不可分享”、迁移后标“分享前审核”；D1 补交进度 45；459 passed、4 skipped | Harbor 补修，待复评 |
 
+第 [47](47-web-app-prototype-plan.md) 轮：Web App 六模块原型设计与 Cursor 提示词，仅文档设计，前端待实现。
+
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。
