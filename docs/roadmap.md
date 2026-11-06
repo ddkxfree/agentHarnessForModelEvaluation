@@ -21,6 +21,10 @@
 
 ## 当前状态
 
+Harbor运行体验（2026-11-06）：run／resume新增10秒进度、阶段汇总与最新活动，清理和归档阶段提示；结束自动生成无需服务的report.html，新增export补导出历史记录。既有Cursor真实运行15步轨迹已补报告，新流程Oracle1/1通过，无新增模型费用；浏览器file预览受限，见 [57](progress/57-harbor-progress-offline-report.md) 与 [说明](harbor-offline-reports.md)。
+
+本机Cursor环境（2026-11-06）：Docker／Harbor0.25.0就绪，题目容器安装Cursor CLI成功；独立联网fix-git派生环境Oracle1/1通过，无残留容器。新增隐藏输入Key、列模型、指定模型单题启动入口；用户尚需创建Cursor用户Key，未调用Cursor模型、扣费和轨迹仍待实测。见 [56](progress/56-cursor-local-environment.md) 与 [快速开始](cursor-local-quickstart.md)。
+
 记录链路与小批验收（2026-11-05）：Native schema2增加稳定身份、请求级原始证据、工具事件、阶段状态、取消快照及缓存／推理用量；Harbor0.25恢复前私有归档并禁用会删旧证据的内部重试。离线474 passed、8 skipped，实际Docker专项1 passed；DeepSeek Flash并发2跑5道缓存TB题，评分4/5，34请求用量与轨迹逐项匹配，重复导入不增计数。实际账单未知，本批保守估算0.591345元；代理已停止、无残留容器。前端／正式数据库／新版环境尚未接入，见 [55](progress/55-observability-foundation.md) 与 [记录说明](observability.md)。
 
 Cursor可观测性补充（2026-11-05）：公开消息与工具事件可保存，汇总token取决于CLI返回usage，逐步token与内部API重试不可保证；本机Harbor0.25.0异常重试会删除旧trial目录，恢复会清理未完成目录，需先补独立attempt归档再大规模运行。本轮仅源码／文档核查，见 [54](progress/54-cursor-observability.md)。

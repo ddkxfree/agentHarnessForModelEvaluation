@@ -1,0 +1,21 @@
+# Local setup smoke test, not an unchanged official benchmark environment.
+# Prepared on 2026-11-06: cached verifier dependencies + internet for Cursor CLI.
+schema_version: 1
+harbor:
+  executable: runs/harbor-venv/bin/harbor
+task:
+  path: runs/cursor-smoke-20261106/tasks/fix-git
+  fingerprint: 1a233d5280c4430d
+agent:
+  name: cursor-cli
+  model: composer-2.5
+  env: [CURSOR_API_KEY]
+attempts: 1
+concurrency: 1
+max_retries: 0
+limits:
+  wall_clock_s: 900
+  prepare_s: 60
+  cleanup_s: 60
+  stop_grace_s: 15
+output_dir: runs/cursor-smoke-20261106/results

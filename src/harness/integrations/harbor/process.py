@@ -701,6 +701,8 @@ def supervise(
         except ProcessLookupError:
             pass
         entry.update(finished_at=_now(), exit_code=proc.returncode)
+        if on_tick is not None:
+            on_tick({"elapsed_s": time.monotonic() - started, "phase": "清理容器"})
         entry["cleanup"] = full_cleanup(job_dir, cleanup_s, settle_s)
         entry["timing_s"] = {
             "harbor": round((stop_started or ended) - started, 2),
@@ -712,6 +714,8 @@ def supervise(
             run_dir, status=status, stop_reason=stop_reason, exit_code=proc.returncode,
             runs=runs, finished_at=_now(),
         )  # fmt: skip
+        if on_tick is not None:
+            on_tick({"elapsed_s": time.monotonic() - started, "phase": "归档与生成离线报告"})
         return _publish(run_dir, job_dir, redact)
 
 
@@ -760,6 +764,14 @@ def _publish(run_dir: Path, job_dir: Path, redact: list[str]) -> dict[str, Any]:
     state = _update_state(run_dir, imported=True, import_error=None)
     record["state"] = {k: state.get(k) for k in ("status", "stop_reason", "exit_code", "runs")}
     _write_json(record_path, record)
+    from harness.integrations.harbor.presentation import export_report
+
+    try:
+        report = export_report(run_dir)
+        state = _update_state(run_dir, report=str(report.name), report_error=None)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # A presentation failure must not discard imported evidence or change task scores.
+        state = _update_state(run_dir, report_error=str(exc))
     return state
 
 

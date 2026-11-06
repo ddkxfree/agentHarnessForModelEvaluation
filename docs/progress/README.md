@@ -58,8 +58,10 @@
 | [52](52-benchmark-landscape-research.md) | SWE／TB／JobBench题数、公开私有与质量核查，TB4.1发布差异、镜像分层与缓存建议 | 题库调研 |
 | [53](53-cursor-benchmark-feasibility.md) | Cursor订阅CLI批量做公开题：本机Harbor双版本适配核查、三基准执行路径、独立裁判费用、用量与工期条件估算 | 可行性调研 |
 | [54](54-cursor-observability.md) | Cursor原始流与轨迹、汇总usage和逐步token边界；Harbor重试／恢复清理失败目录风险 | 可观测性调研 |
+| [55](55-observability-foundation.md) | Native请求／步骤／工具持久证据与完整用量；Harbor恢复前归档；5题并发真实验收与去重核对 | 记录链路与小批验收 |
+| [56](56-cursor-local-environment.md) | 本机容器安装Cursor CLI、联网派生任务Oracle通过、隐藏输入Key的单题启动入口 | Cursor环境准备 |
+| [57](57-harbor-progress-offline-report.md) | 10秒阶段／耗时／活动提示，自动自包含离线报告，历史记录export；真实Oracle通过 | 运行体验与离线查看 |
 
 第 [47](47-web-app-prototype-plan.md) 轮：Web App 六模块原型设计与 Cursor 提示词，仅文档设计。实现见 [48](48-web-app-prototype.md)。
 
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。
-| [55](55-observability-foundation.md) | Native请求／步骤／工具持久证据与完整用量；Harbor恢复前归档；5题并发真实验收与去重核对 | 记录链路与小批验收 |

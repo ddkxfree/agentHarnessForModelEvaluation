@@ -257,6 +257,23 @@ def _print_final(run_dir: Path, state: dict) -> None:
     elif state.get("import_error"):
         _say(f"no trial records: {state['import_error']}")
     _say(f"run directory: {run_dir}")
+    if state.get("report_error"):
+        _say(f"offline report unavailable: {state['report_error']}")
+    elif (run_dir / "report.html").is_file():
+        _say(f"offline report (open in browser): {run_dir / 'report.html'}")
+
+
+@harbor_app.command("export")
+def export(run_dir: Path) -> None:
+    """Create a standalone offline HTML report from an imported run. No model calls."""
+    from harness.integrations.harbor.presentation import export_report
+
+    try:
+        output = export_report(run_dir)
+    except (OSError, ValueError, KeyError) as exc:
+        _say(f"cannot export: {exc}")
+        raise typer.Exit(1) from None
+    _say(f"offline report (open in browser): {output}")
 
 
 @harbor_app.command()
@@ -268,6 +285,7 @@ def run(
     from harness.integrations.harbor.config import load_config
     from harness.integrations.harbor.runtime import HarborError
 
+    _say("Preparing Harbor run: checking version, task and resolved configuration…")
     try:
         cfg, root = load_config(config)
         run_dir = hp.prepare(cfg, root, config)
@@ -286,10 +304,13 @@ def run(
         f"Harbor job directory {run_dir / receipt['job_dir']}"
     )
     env = {**hp.base_env(), **hp.agent_env(cfg)}
+    from harness.integrations.harbor.presentation import progress_printer
+
     try:
         state = hp.supervise(
             run_dir, receipt["argv"], env, wall_clock_s=cfg.limits.wall_clock_s,
             grace_s=cfg.limits.stop_grace_s, cleanup_s=cfg.limits.cleanup_s,
+            on_tick=progress_printer(run_dir, _say),
         )  # fmt: skip
     except hp.HarborRunError as exc:
         _say(f"not started: {exc}")
@@ -341,6 +362,7 @@ def resume(run_dir: Path) -> None:
 
     from harness.integrations.harbor import process as hp
     from harness.integrations.harbor.config import HarborRunConfig
+    from harness.integrations.harbor.presentation import progress_printer
     from harness.integrations.harbor.runtime import HarborError
 
     requested_ns = time.time_ns()  # a cancel after this moment stops the resume
@@ -357,6 +379,7 @@ def resume(run_dir: Path) -> None:
             run_dir, argv, env, wall_clock_s=cfg.limits.wall_clock_s, kind="resume",
             requested_ns=requested_ns, grace_s=cfg.limits.stop_grace_s,
             cleanup_s=cfg.limits.cleanup_s,
+            on_tick=progress_printer(run_dir, _say),
         )  # fmt: skip
     except (HarborError, hp.HarborRunError) as exc:
         _say(f"not resumed: {exc}")
