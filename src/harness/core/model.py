@@ -81,16 +81,32 @@ class OpenAICompatibleModel(Model):
         if tools:
             kwargs["tools"] = tools
 
+        from harness.core.observability import call_context
+
+        if context := call_context.get():
+            kwargs["extra_headers"] = {
+                "X-Harness-" + k.replace("_", "-"): v for k, v in context.items()
+            }
         start = time.perf_counter()
         resp = await self._client.chat.completions.create(**kwargs)
         latency = time.perf_counter() - start
 
         choice = resp.choices[0]
-        usage = Usage()
+        usage = Usage(input_tokens=None, output_tokens=None, source="unreported")
         if resp.usage is not None:
+            raw_usage = resp.usage.model_dump()
+            cached = raw_usage.get("prompt_cache_hit_tokens")
+            if cached is None:
+                cached = (raw_usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+            reasoning = (raw_usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
             usage = Usage(
-                input_tokens=resp.usage.prompt_tokens or 0,
-                output_tokens=resp.usage.completion_tokens or 0,
+                input_tokens=raw_usage.get("prompt_tokens"),
+                output_tokens=raw_usage.get("completion_tokens"),
+                cached_input_tokens=cached,
+                reasoning_output_tokens=reasoning,
+                cache_included_in_input=True if cached is not None else None,
+                reasoning_included_in_output=True if reasoning is not None else None,
+                source="provider",
             )
         tool_calls = [
             ToolCall(id=c.id, name=c.function.name, arguments=c.function.arguments or "")
@@ -98,6 +114,8 @@ class OpenAICompatibleModel(Model):
             if c.type == "function"
         ]
         return ModelOutput(
+            provider_response_id=getattr(resp, "id", None),
+            raw_response=resp.model_dump(mode="json") if hasattr(resp, "model_dump") else None,
             text=choice.message.content or "",
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason,

@@ -115,12 +115,14 @@ class HarnessModel:
         self.bridge.steps.append(
             Step(
                 index=len(self.bridge.steps),
+                call_id=out.call_id,
                 text=out.text,
                 tool_calls=out.tool_calls,
                 usage=out.usage,
                 latency_s=out.latency_s,
             )
         )
+        self.bridge.trajectory.event("step_recorded", call_id=out.call_id)
         calls = [
             SimpleNamespace(id=c.id, function=SimpleNamespace(name=c.name, arguments=c.arguments))
             for c in out.tool_calls
@@ -158,6 +160,7 @@ class HarnessModel:
         )
         if self.bridge.steps and formatted:
             self._record_observations(self.bridge.steps[-1], outputs, formatted)
+        self.bridge.trajectory.checkpoint()
         return formatted
 
     def _record_observations(self, step: Step, outputs: list[dict], formatted: list[dict]) -> None:
@@ -208,6 +211,14 @@ class SandboxEnvironment:
         # mini-swe-agent expects stdout and stderr interleaved in one stream.
         script = f"exec 2>&1\n{prefix}{action.get('command', '')}"
         start = time.perf_counter()
+        step = self.bridge.steps[-1] if self.bridge.steps else None
+        tool_id = f"{step.call_id}:tool:{len(step.observations)}" if step else None
+        self.bridge.trajectory.event(
+            "tool_started",
+            call_id=step.call_id if step else None,
+            tool_execution_id=tool_id,
+            arguments=script,
+        )
         res = self.bridge.run(self.sandbox.exec(script, timeout=timeout))
         elapsed = time.perf_counter() - start
         output: dict[str, Any] = {
@@ -224,6 +235,12 @@ class SandboxEnvironment:
             step.raw_outputs.append(None)
             step.exit_codes.append(res.exit_code)
             step.tool_latency_s += elapsed
+        self.bridge.trajectory.event(
+            "tool_finished",
+            call_id=step.call_id if step else None,
+            tool_execution_id=tool_id,
+            output=output,
+        )
         self._check_finished(output)
         return output
 

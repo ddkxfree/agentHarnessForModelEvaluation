@@ -53,7 +53,13 @@
 | [47](47-harbor-review46-fixes.md) | H4b 快照脱敏版本单独记录，rebuild 优先从 local/ 原件重导入、否则重新脱敏旧快照（保留原始哈希、更新存储哈希），旧快照标“不可分享”、迁移后标“分享前审核”；D1 补交进度 45；459 passed、4 skipped | Harbor 补修，待复评 |
 | [48](48-web-app-prototype.md) | `frontend/` 六模块演示原型：工作台、评测集、实验中心、轨迹分析、实验对比、模型与连接；不调用模型、不连接后端 | Web App 原型 |
 | [49](49-web-report-navigation.md) | 总览／报告／说明分层，独立日志与证据链接，本地持久化及跨标签页读取；10 项前端测试通过 | Web App 展示优化 |
+| [50](50-real-data-pilot.md) | DeepSeek 真实执行：Native／Harbor fix-git、JobBench 离线生成、原始用量与产物索引、数据契约初稿 | 真实数据采集 |
+| [51](51-offline-evaluation-assets.md) | 题库／镜像／判分依赖缓存；TB、SWE、Harbor断网验收；JobBench完整材料和运行／裁判环境；offline_verifier显式入口 | 离线资源准备 |
+| [52](52-benchmark-landscape-research.md) | SWE／TB／JobBench题数、公开私有与质量核查，TB4.1发布差异、镜像分层与缓存建议 | 题库调研 |
+| [53](53-cursor-benchmark-feasibility.md) | Cursor订阅CLI批量做公开题：本机Harbor双版本适配核查、三基准执行路径、独立裁判费用、用量与工期条件估算 | 可行性调研 |
+| [54](54-cursor-observability.md) | Cursor原始流与轨迹、汇总usage和逐步token边界；Harbor重试／恢复清理失败目录风险 | 可观测性调研 |
 
 第 [47](47-web-app-prototype-plan.md) 轮：Web App 六模块原型设计与 Cursor 提示词，仅文档设计。实现见 [48](48-web-app-prototype.md)。
 
 想在自己电脑上逐步跑起来，先读 [逐步运行计划](../first-run-plan.md)；旧的 [上手练习指南](../hands-on.md) 仍有待修订内容。
+| [55](55-observability-foundation.md) | Native请求／步骤／工具持久证据与完整用量；Harbor恢复前归档；5题并发真实验收与去重核对 | 记录链路与小批验收 |

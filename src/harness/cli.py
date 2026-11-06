@@ -202,7 +202,7 @@ def _print_sample(r: SampleResult, full: bool) -> None:
         console.print(f"[red]sandbox cleanup failed: {r.cleanup_error}[/]  {r.sandbox}")
     artifacts = {a.name: a for a in r.artifacts}
     for step in r.steps:
-        tokens = step.usage.input_tokens + step.usage.output_tokens
+        tokens = step.usage.total
         console.print(f"[bold cyan]step {step.index}[/]  ({tokens} tokens)")
         if step.text.strip():
             plain(step.text)

@@ -21,6 +21,18 @@
 
 ## 当前状态
 
+记录链路与小批验收（2026-11-05）：Native schema2增加稳定身份、请求级原始证据、工具事件、阶段状态、取消快照及缓存／推理用量；Harbor0.25恢复前私有归档并禁用会删旧证据的内部重试。离线474 passed、8 skipped，实际Docker专项1 passed；DeepSeek Flash并发2跑5道缓存TB题，评分4/5，34请求用量与轨迹逐项匹配，重复导入不增计数。实际账单未知，本批保守估算0.591345元；代理已停止、无残留容器。前端／正式数据库／新版环境尚未接入，见 [55](progress/55-observability-foundation.md) 与 [记录说明](observability.md)。
+
+Cursor可观测性补充（2026-11-05）：公开消息与工具事件可保存，汇总token取决于CLI返回usage，逐步token与内部API重试不可保证；本机Harbor0.25.0异常重试会删除旧trial目录，恢复会清理未完成目录，需先补独立attempt归档再大规模运行。本轮仅源码／文档核查，见 [54](progress/54-cursor-observability.md)。
+
+Cursor批量评测可行性（2026-11-05）：官方CLI支持订阅自动化，本机Harbor0.25.0与JobBench独立0.22.0均含cursor-cli适配；确认SWE补丁／TB任务／JobBench交付物三条执行路径，JobBench裁判单独计费。仅调研，未认证或调用模型，账户扣费与端到端兼容性待5题试跑；见 [报告](cursor-benchmark-feasibility.md) 与 [53](progress/53-cursor-benchmark-feasibility.md)。
+
+题库与版本调研（2026-11-05）：核对SWE Verified／Scale Pro V2、TB4.1完整66题与CPU63题、JobBench当前main65＋easy63，区分公开／私有和运行时隐藏测试；说明实例镜像分层及全量文本／按批镜像缓存策略。仅调研，原TB2.0和Harbor固定环境未升级，见 [报告](benchmark-landscape-research.md) 与 [52](progress/52-benchmark-landscape-research.md)。
+
+离线资源准备（2026-11-05）：5个TB与2个SWE原始镜像缓存，JobBench main／easy 128题981文件齐备；预装5个TB判分镜像、Harbor终端工具、JobBench运行／裁判依赖。断网验收TB Oracle 5/5／no-op 0/5、SWE两题resolved、Harbor派生任务Oracle通过；新增显式offline_verifier配置，非Docker回归463 passed、8 skipped，静态检查通过。本轮无模型／裁判费用，见 [51](progress/51-offline-evaluation-assets.md) 与 [使用说明](offline-assets.md)。
+
+真实数据采集（2026-11-05）：复用历史三道自建题，新增 Native／Harbor fix-git、SWE 与 regex 环境尝试和 JobBench 离线生成；Harbor fix-git reward=1，Native 评分依赖失败需复核，JobBench 保留预算停止轨迹及6个中间文件，SWE amd64 镜像准备600秒超时、未调用模型。57次请求原始用量和产物本地归档，保守费用约1.387元，预算代理已停止、无本轮残留评测容器。数据契约初稿见 [说明](real-run-data-contract.md)，完成与限制见 [50](progress/50-real-data-pilot.md)。
+
 Web App 页面分层优化（2026-11-05）：工作台与实验对比改为摘要入口，新增完整实验／对比报告、独立日志／评分证据和指标说明页，保留六模块；演示数据本地持久化并支持标签页同步。前端 10 项测试与生产构建通过，浏览器工具超时，视觉和真实点击验收待用户预览。无模型调用或后端接入，见 [49](progress/49-web-report-navigation.md)。
 
 每一轮的详细记录见 [`docs/progress/`](progress/README.md)。

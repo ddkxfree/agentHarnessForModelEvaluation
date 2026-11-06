@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-MAPPING_VERSION = 1
+MAPPING_VERSION = 2
 
 # Agents of the pinned release that never call a model: "no usage" is then not applicable,
 # which is different from a model agent that did not report its usage.
@@ -158,6 +158,18 @@ def map_trial(r: dict[str, Any], trial_lock: dict[str, Any] | None) -> dict[str,
         # per job (stats.n_retries)
         "regrade_of": config.get("source_trial"),
         "status": status,
+        "generation_status": "failed"
+        if exception and exception.get("phase") == "agent_execution"
+        else "completed"
+        if (r.get("agent_execution") or {}).get("finished_at")
+        else "unknown",
+        "generation_finish_reason": None,
+        "assessment_status": "completed"
+        if rewards is not None
+        else "failed"
+        if exception and exception.get("phase") == "verifier"
+        else "unknown",
+        "phase_evidence": {p: r.get(p) for p in PHASES},
         "outcome": outcome,
         "rewards": rewards,
         "score_note": s["note"],

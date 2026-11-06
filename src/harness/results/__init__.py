@@ -223,7 +223,13 @@ def _native(run_dir: Path) -> RunView:
                     error_category=str(r.error_kind) if r.error_kind else None,
                     input_tokens=u.input_tokens if made_calls else None,
                     output_tokens=u.output_tokens if made_calls else None,
-                    usage_status="reported" if made_calls else "not_applicable",
+                    usage_status=(
+                        "reported"
+                        if u.input_tokens is not None and u.output_tokens is not None
+                        else "unknown"
+                    )
+                    if made_calls
+                    else "not_applicable",
                     wall_time_s=r.wall_time_s,
                     task_identity={
                         "harness_fingerprint": r.sample.metadata.get("task_fingerprint"),

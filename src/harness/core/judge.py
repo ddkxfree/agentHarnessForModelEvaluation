@@ -17,7 +17,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 from pydantic import BaseModel, Field
 
 from harness.core.cache import DiskCache, cache_key
+from harness.core.observability import call_context, new_id
 from harness.core.retry import retry_async
+from harness.core.trajectory import current_trajectory
 from harness.core.types import (
     GenerateConfig,
     JudgeCall,
@@ -25,6 +27,7 @@ from harness.core.types import (
     Message,
     Sample,
     Score,
+    Usage,
 )
 
 __all__ = ["JudgeCall", "JudgeError", "JudgePanel", "JudgeRecord", "JudgeSpec", "JudgeScorer"]
@@ -101,22 +104,87 @@ class JudgePanel:
         cache = self._cache[judge]
         # Judges never share cached responses, so two judges are two calls, not a replay.
         key_namespace = "/".join(filter(None, [namespace, "judge", judge]))
-        call = JudgeCall(judge=judge, purpose=purpose, model=model.spec(), messages=messages)
+        trajectory = current_trajectory()
+        call = JudgeCall(
+            call_id=new_id("judge"),
+            judge=judge,
+            purpose=purpose,
+            model=model.spec(),
+            messages=messages,
+            usage=Usage(input_tokens=None, output_tokens=None, source="unreported"),
+        )
         record.calls.append(call)
         key = cache_key(model.spec(), messages, spec.generate, None, key_namespace)
         if cache is not None and (hit := cache.get(key)) is not None:
             out, call.cached = hit, True
+            trajectory.event(
+                "judge_cache_replayed",
+                call_id=call.call_id,
+                origin_call_id=hit.call_id,
+                judge=judge,
+                response=hit.model_dump(mode="json"),
+            )
         else:
 
             def count(_: int) -> None:
                 call.attempts += 1
 
+            async def invoke():
+                request_id = new_id("judge_request")
+                request = {
+                    "call_id": request_id,
+                    "logical_call_id": call.call_id,
+                    "retry_index": len(call.requests),
+                    "status": "started",
+                }
+                call.requests.append(request)
+                trajectory.event(
+                    "judge_call_started",
+                    judge=judge,
+                    purpose=purpose,
+                    messages=messages,
+                    model=model.spec(),
+                    config=spec.generate.model_dump(mode="json"),
+                    **request,
+                )
+                identity = trajectory.journal.identity if trajectory.journal else {}
+                token = call_context.set(
+                    {
+                        "run_id": identity.get("run_id", "detached"),
+                        "attempt_id": identity.get("attempt_id", "detached"),
+                        "call_id": request_id,
+                    }
+                )
+                start = time.perf_counter()
+                try:
+                    response = await asyncio.wait_for(
+                        model.generate(messages, spec.generate), spec.generate.timeout
+                    )
+                    response = response.model_copy(update={"call_id": request_id})
+                    request.update(
+                        status="completed",
+                        usage=response.usage.model_dump(mode="json"),
+                        latency_s=time.perf_counter() - start,
+                    )
+                    trajectory.event(
+                        "judge_call_completed",
+                        judge=judge,
+                        response=response.model_dump(mode="json"),
+                        raw_response=response.raw_response,
+                        **request,
+                    )
+                    return response
+                except BaseException as exc:
+                    request.update(status="error", usage=None, error=f"{type(exc).__name__}: {exc}")
+                    trajectory.event("judge_call_interrupted", judge=judge, **request)
+                    raise
+                finally:
+                    call_context.reset(token)
+
             started = time.perf_counter()
             try:
                 out = await retry_async(
-                    lambda: asyncio.wait_for(
-                        model.generate(messages, spec.generate), spec.generate.timeout
-                    ),
+                    invoke,
                     retries=self.retries,
                     is_retryable=lambda e: isinstance(e, TimeoutError) or model.is_retryable(e),
                     base_delay=self.retry_base_delay,
@@ -125,6 +193,7 @@ class JudgePanel:
             except Exception as exc:
                 call.error = f"{type(exc).__name__}: {exc}"
                 call.latency_s = time.perf_counter() - started
+                trajectory.event("judge_finished", call_id=call.call_id, error=call.error)
                 return call
             call.latency_s = time.perf_counter() - started
             if cache is not None:
@@ -133,6 +202,7 @@ class JudgePanel:
         call.finish_reason = out.finish_reason
         call.usage = out.usage
         call.served_model = out.served_identity()
+        trajectory.event("judge_finished", call_id=call.call_id)
         return call
 
 

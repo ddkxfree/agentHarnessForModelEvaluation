@@ -167,3 +167,35 @@ def test_oracle_needs_a_sandbox():
         asyncio.run(
             tb.HarborOracleSolver()(Sample(id="x", input="", target=""), None, None)  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize(("exit_code", "expected"), [(0, 1.0), (1, 0.0)])
+def test_offline_verifier_uses_cached_tools_and_preserves_report(tmp_path, exit_code, expected):
+    from harness.sandbox.base import ExecResult
+
+    class OfflineSandbox(HarborSandbox):
+        async def exec(self, cmd, *, timeout=60.0):
+            if cmd.startswith("uvx --offline"):
+                self.commands.append(cmd)
+                self.files["/logs/verifier/test-stdout.txt"] = b"pytest output"
+                self.files["/logs/verifier/ctrf.json"] = (
+                    b'{"results":{"tests":[{"name":"check","status":"passed"}]}}'
+                )
+                return ExecResult(exit_code=exit_code, stdout="", stderr="")
+            return await super().exec(cmd, timeout=timeout)
+
+    sandbox = OfflineSandbox({})
+    sample = tb.load_task(make_task_dir(tmp_path), "derived")
+    scorer = tb.HarborVerifierScorer(offline=True)
+    result = asyncio.run(scorer(sample, "", sandbox))
+    assert result.value == expected
+    assert "apt-get" not in sandbox.commands[-1]
+    assert scorer.describe()["fingerprint"] != tb.HarborVerifierScorer().describe()["fingerprint"]
+
+
+def test_offline_missing_test_report_is_environment_error(tmp_path):
+    from harness.sandbox.base import SandboxError
+
+    sample = tb.load_task(make_task_dir(tmp_path), "derived")
+    with pytest.raises(SandboxError, match="no CTRF"):
+        asyncio.run(tb.HarborVerifierScorer(offline=True)(sample, "", HarborSandbox({})))

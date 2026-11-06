@@ -31,18 +31,49 @@ class GenerateConfig(BaseModel):
 
 
 class Usage(BaseModel):
-    input_tokens: int = 0
-    output_tokens: int = 0
+    # None means not reported; defaults keep historical files readable.
+    input_tokens: int | None = Field(default=0, ge=0)
+    output_tokens: int | None = Field(default=0, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    reasoning_output_tokens: int | None = Field(default=None, ge=0)
+    cache_included_in_input: bool | None = None
+    reasoning_included_in_output: bool | None = None
+    source: str = "legacy"
 
     def __add__(self, other: Usage) -> Usage:
+        if not self.model_fields_set:
+            return other.model_copy(deep=True)
+        if not other.model_fields_set:
+            return self.model_copy(deep=True)
+
+        def add(a: int | None, b: int | None) -> int | None:
+            return None if a is None or b is None else a + b
+
         return Usage(
-            input_tokens=self.input_tokens + other.input_tokens,
-            output_tokens=self.output_tokens + other.output_tokens,
+            input_tokens=add(self.input_tokens, other.input_tokens),
+            output_tokens=add(self.output_tokens, other.output_tokens),
+            cached_input_tokens=add(self.cached_input_tokens, other.cached_input_tokens),
+            reasoning_output_tokens=add(
+                self.reasoning_output_tokens, other.reasoning_output_tokens
+            ),
+            cache_included_in_input=self.cache_included_in_input
+            if self.cache_included_in_input == other.cache_included_in_input
+            else None,
+            reasoning_included_in_output=self.reasoning_included_in_output
+            if self.reasoning_included_in_output == other.reasoning_included_in_output
+            else None,
+            source=self.source if self.source == other.source else "aggregate",
         )
 
     @property
     def total(self) -> int:
-        return self.input_tokens + self.output_tokens
+        """Known input/output subtotal for operational accounting; inspect fields for coverage."""
+        return (self.input_tokens or 0) + (self.output_tokens or 0)
+
+
+def token_sum(values: Any) -> int | None:
+    values = list(values)
+    return None if any(v is None for v in values) else sum(values)
 
 
 class ToolCall(BaseModel):
@@ -59,6 +90,10 @@ class ToolCall(BaseModel):
 
 
 class ModelOutput(BaseModel):
+    call_id: str | None = None
+    origin_call_id: str | None = None
+    provider_response_id: str | None = None
+    raw_response: dict[str, Any] | None = Field(default=None, exclude=True)
     text: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
     finish_reason: str | None = None
@@ -92,6 +127,7 @@ class Step(BaseModel):
     """One model turn of an agent loop and the tool executions it triggered."""
 
     index: int
+    call_id: str | None = None
     text: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
     # What the model was shown for each tool call, after any truncation.
@@ -121,6 +157,9 @@ class Score(BaseModel):
 
 class JudgeCall(BaseModel):
     """One call to a judge model, as sent and as answered."""
+
+    call_id: str | None = None
+    requests: list[dict[str, Any]] = Field(default_factory=list)
 
     judge: str
     # What the call was for, e.g. "rubric" or "pairwise:candidate_first".
@@ -194,6 +233,13 @@ class CallStats(BaseModel):
 
 
 class SampleResult(BaseModel):
+    record_schema_version: int = 1
+    run_id: str | None = None
+    attempt_id: str | None = None
+    generation_status: str = "unknown"
+    generation_finish_reason: str | None = None
+    assessment_status: str = "unknown"
+    model_calls: list[dict[str, Any]] = Field(default_factory=list)
     sample: Sample
     # Which repetition of the sample this is; see ``runner.run_eval(epochs=...)``.
     epoch: int = 1
@@ -228,6 +274,17 @@ class SampleResult(BaseModel):
 
     def usage(self) -> Usage:
         """Tokens spent on the sample, including steps of a solver that failed midway."""
+        if self.model_calls:
+            usages = [
+                Usage.model_validate(c["usage"])
+                for c in self.model_calls
+                if c.get("status") == "completed" and c.get("usage") is not None
+            ]
+            return (
+                sum(usages, Usage())
+                if usages
+                else Usage(input_tokens=None, output_tokens=None, source="unreported")
+            )
         if self.steps:
             return sum((s.usage for s in self.steps), Usage())
         return self.output.usage if self.output else Usage()

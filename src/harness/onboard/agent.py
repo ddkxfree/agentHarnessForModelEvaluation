@@ -262,7 +262,7 @@ class OnboardAgent:
             )
         if self._remaining() <= 0:
             raise self._out_of_time("the previous step")
-        used = self.usage.input_tokens + self.usage.output_tokens
+        used = self.usage.total
         if b.token_limit is not None and used >= b.token_limit:
             raise StopAttempt("token_limit", BUDGET_EXHAUSTED, f"{used} of {b.token_limit} tokens")
 
@@ -321,7 +321,8 @@ class OnboardAgent:
         )
         if not step["cached"]:
             self.usage = self.usage + out.usage
-        self.record["usage"] = self.usage.model_dump()
+        self.record["usage"] = self.usage.model_dump(include={"input_tokens", "output_tokens"})
+        self.record["usage_details"] = self.usage.model_dump()
         self.messages.append({"role": "assistant", "content": out.text})
         self._save()
         return out.text
@@ -477,7 +478,8 @@ class OnboardAgent:
             **ident,
             "spec_path": str(self.spec_path) if self.spec_path else None,
             "budget": spec.budget.model_dump(),
-            "usage": self.usage.model_dump(),
+            "usage": self.usage.model_dump(include={"input_tokens", "output_tokens"}),
+            "usage_details": self.usage.model_dump(),
             "preparation": None,
             "plan": None,
             "questions": [],

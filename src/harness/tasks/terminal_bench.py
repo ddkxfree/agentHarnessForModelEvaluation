@@ -205,16 +205,27 @@ class HarborVerifierScorer:
     name = "harbor_verifier"
     requires_sandbox = True
 
+    def __init__(self, offline: bool = False) -> None:
+        self.offline = offline
+
     async def __call__(self, sample: Sample, text: str, sandbox: Sandbox) -> Score:
         await _run(
             sandbox,
             "mkdir -p /logs/agent /logs/verifier"
-            " && rm -f /logs/verifier/reward.txt /logs/verifier/reward.json",
+            " && rm -f /logs/verifier/reward.txt /logs/verifier/reward.json"
+            + (" /logs/verifier/ctrf.json" if self.offline else ""),
         )
         await sandbox.copy_dir(Path(sample.metadata["task_dir"]) / "tests", "/tests")
         await _run(sandbox, "chmod +x /tests/test.sh")
+        command = "/tests/test.sh"
+        if self.offline:
+            # Explicit opt-in: use unchanged test_outputs.py with cached pinned tooling.
+            command = (
+                "uvx --offline -p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 "
+                "pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA"
+            )
         res = await sandbox.exec(
-            "/tests/test.sh > /logs/verifier/test-stdout.txt 2>&1",
+            f"{command} > /logs/verifier/test-stdout.txt 2>&1",
             timeout=float(sample.metadata["verifier_timeout"]),
         )
         stdout = await _read(sandbox, "/logs/verifier/test-stdout.txt") or ""
@@ -222,6 +233,28 @@ class HarborVerifierScorer:
         details = {"test_stdout_tail": stdout[-2000:], "test_stdout_sha256": artifact.sha256}
         if res.timed_out:
             return Score(value=0.0, extracted="timeout", method=self.name, details=details)
+        if self.offline:
+            report = await _read(sandbox, "/logs/verifier/ctrf.json")
+            if not report:
+                raise SandboxError(
+                    "offline verifier produced no CTRF report; dependencies or test startup failed"
+                )
+            current_trajectory().save_artifact("ctrf.json", report)
+            try:
+                data = json.loads(report)
+                tests = data.get("results", {}).get("tests")
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise SandboxError("offline verifier produced an invalid CTRF report") from exc
+            if not isinstance(tests, list) or not tests:
+                raise SandboxError("offline verifier produced no test results")
+            if res.exit_code not in (0, 1):
+                raise SandboxError(f"offline pytest failed to run: exit={res.exit_code}")
+            return Score(
+                value=float(res.exit_code == 0),
+                extracted=f"pytest_exit={res.exit_code}",
+                method=self.name,
+                details=details,
+            )
         reward = parse_reward(
             await _read(sandbox, "/logs/verifier/reward.json"),
             await _read(sandbox, "/logs/verifier/reward.txt"),
@@ -233,7 +266,18 @@ class HarborVerifierScorer:
     def describe(self) -> dict[str, Any]:
         desc = {
             "name": self.name,
-            "script": "/tests/test.sh",
+            "script": "/tests/test.sh"
+            if not self.offline
+            else "cached uvx pytest /tests/test_outputs.py",
+            "offline_dependencies": self.offline,
+            "offline_tool_versions": {
+                "uv": "0.9.5",
+                "python": "3.13",
+                "pytest": "8.4.1",
+                "pytest-json-ctrf": "0.3.5",
+            }
+            if self.offline
+            else None,
             "reward_files": ["/logs/verifier/reward.json", "/logs/verifier/reward.txt"],
             "deviations_from_harbor": DEVIATIONS,
         }
@@ -286,6 +330,7 @@ def terminal_bench(
     root: str | None = None,
     token_limit: int | None = None,
     max_observation_chars: int | None = None,
+    offline_verifier: bool = False,
 ) -> Task:
     names = list(ids) if ids else list(PINS)
     unknown = sorted(set(names) - set(PINS))
@@ -300,6 +345,12 @@ def terminal_bench(
     def load() -> list[Sample]:
         base = Path(root) if root else None
         samples = [load_task(ensure_task(n, base), PINS[n].image) for n in sorted(names)]
+        if offline_verifier:
+            for sample in samples:
+                sample.metadata["original_image"] = sample.metadata["image"]
+                sample.metadata["image"] = (
+                    f"harness-offline-verifier:{Path(sample.metadata['task_dir']).name}-uv095"
+                )
         return select(samples, limit, seed)
 
     agent_only(solver, max_observation_chars=max_observation_chars)
@@ -327,7 +378,7 @@ def terminal_bench(
         dataset=dataset,
         load=load,
         solver=chosen,
-        scorer=HarborVerifierScorer(),
+        scorer=HarborVerifierScorer(offline=offline_verifier),
         params={
             "limit": limit,
             "seed": seed,
@@ -339,6 +390,7 @@ def terminal_bench(
             "root": root,
             "token_limit": token_limit,
             "max_observation_chars": max_observation_chars,
+            "offline_verifier": offline_verifier,
         },
         sandbox=sandbox_spec,
         time_limit=time_limit,

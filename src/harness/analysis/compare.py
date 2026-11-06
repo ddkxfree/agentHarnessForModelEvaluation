@@ -33,7 +33,7 @@ from harness.core.io import read_json, read_results, write_json
 from harness.core.model import Model
 from harness.core.runner import run_eval
 from harness.core.task import Task, get_task
-from harness.core.types import GenerateConfig, Outcome, SampleResult
+from harness.core.types import GenerateConfig, Outcome, SampleResult, token_sum
 from harness.sandbox.base import SandboxProvider
 
 Kind = Literal["solver_comparison", "ablation"]
@@ -292,8 +292,8 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
         "n": n,
         "accuracy": sum(r.score.value if r.score else 0.0 for r in results) / n if n else 0.0,
         "solved": sum(_solved(r) for r in results),
-        "input_tokens": sum(u.input_tokens for u in usages),
-        "output_tokens": sum(u.output_tokens for u in usages),
+        "input_tokens": token_sum(u.input_tokens for u in usages),
+        "output_tokens": token_sum(u.output_tokens for u in usages),
         "wall_time_s": sum(walls) if walls else None,
         "outcomes": dict(Counter(r.outcome.value for r in results if r.outcome)),
         "finish_reasons": dict(
@@ -304,8 +304,8 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
         "cached_outputs": sum(1 for r in results if r.output and r.output.cached),
         "fresh_calls": sum(r.calls.fresh for r in results),
         "cached_calls": sum(r.calls.cached for r in results),
-        "fresh_input_tokens": sum(r.calls.fresh_usage.input_tokens for r in results),
-        "fresh_output_tokens": sum(r.calls.fresh_usage.output_tokens for r in results),
+        "fresh_input_tokens": token_sum(r.calls.fresh_usage.input_tokens for r in results),
+        "fresh_output_tokens": token_sum(r.calls.fresh_usage.output_tokens for r in results),
         "cache_state": cache_state(
             sum(r.calls.fresh for r in results), sum(r.calls.cached for r in results)
         ),
@@ -314,8 +314,10 @@ def _run_summary(results: list[SampleResult]) -> dict[str, Any]:
     }
 
 
-def _mean(values: list[float]) -> float | None:
-    return sum(values) / len(values) if values else None
+def _mean(values: list[float | None]) -> float | None:
+    if not values or any(v is None for v in values):
+        return None
+    return sum(values) / len(values)
 
 
 def _std(values: list[float]) -> float | None:

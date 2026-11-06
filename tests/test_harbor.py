@@ -117,7 +117,7 @@ def test_argv_maps_every_field_and_paths_are_root_relative(tmp_path):
         agent={"name": "terminus-2", "model": "m/x", "kwargs": {"b": "2", "a": "1"}},
         attempts=3,
         concurrency=2,
-        max_retries=1,
+        max_retries=0,
         limits={"timeout_multiplier": 1.5},
         environment={"extra_docker_compose": ["configs/net.yaml"]},
     )
@@ -127,7 +127,7 @@ def test_argv_maps_every_field_and_paths_are_root_relative(tmp_path):
     assert argv == [
         "/h", "run", "--path", "/task", "--agent", "terminus-2", "--model", "m/x",
         "--agent-kwarg", "a=1", "--agent-kwarg", "b=2",
-        "--n-attempts", "3", "--n-concurrent", "2", "--max-retries", "1",
+        "--n-attempts", "3", "--n-concurrent", "2", "--max-retries", "0",
         "--timeout-multiplier", "1.5", "--env", "docker", "--delete",
         "--extra-docker-compose", str(root / "configs" / "net.yaml"),
         "--jobs-dir", str(tmp_path / "jobs"), "--job-name", "j1", "--yes", "--quiet",
@@ -232,11 +232,13 @@ def test_reimport_is_idempotent_and_changes_need_replace(tmp_path):
     again = hi.import_job(job, tmp_path / "out")
     assert again["action"] == "unchanged" and again["run_dir"] == first["run_dir"]
     assert len(trials_of(first["run_dir"])) == 1
+    old_ids = [(t["run_id"], t["attempt_id"]) for t in trials_of(first["run_dir"])]
     (job / "job.log").write_text("more\n")
     with pytest.raises(hi.ImportConflict):
         hi.import_job(job, tmp_path / "out")
     assert hi.import_job(job, tmp_path / "out", replace=True)["action"] == "replaced"
     assert (first["run_dir"] / "raw" / "job.log").read_text() == "more\n"
+    assert [(t["run_id"], t["attempt_id"]) for t in trials_of(first["run_dir"])] == old_ids
 
 
 def test_import_leaves_the_source_untouched(tmp_path):
@@ -802,6 +804,9 @@ def test_resume_is_exclusive_and_does_not_double_count(harbor_env):
 
     run_dir, state = start(harbor_env("hang", wall_clock_s=1))
     assert state["status"] == "timed_out"
+    receipt = json.loads((run_dir / hp.RECEIPT).read_text())
+    old_job = run_dir / receipt["job_dir"]
+    (old_job / "before-resume-evidence.txt").write_text("partial trajectory")
     with hp.run_lock(run_dir):
         out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
         assert out.exit_code == 1
@@ -812,6 +817,8 @@ def test_resume_is_exclusive_and_does_not_double_count(harbor_env):
     state = hp.read_state(run_dir)
     assert [r["kind"] for r in state["runs"]] == ["run", "resume"]
     assert state["runs"][1]["argv"][1:4] == ["job", "resume", "-p"]
+    archive = run_dir / state["runs"][1]["previous_evidence"]
+    assert (archive / "before-resume-evidence.txt").read_text() == "partial trajectory"
     view = open_run(run_dir)
     assert len(view.samples) == 1 and view.status == "completed"
     out = CliRunner().invoke(app, ["harbor", "resume", str(run_dir)])
@@ -1242,7 +1249,7 @@ def test_an_outdated_archive_is_rebuilt_from_its_snapshot(tmp_path):
     index_before = (run / "raw_index.json").read_text()
     out = CliRunner().invoke(app, ["harbor", "rebuild", str(run)])
     assert out.exit_code == 0, out.output
-    assert "importer 1 -> 2" in out.output and "1/2 trials" in out.output
+    assert f"importer 1 -> {hi.IMPORTER_VERSION}" in out.output and "1/2 trials" in out.output
     view = open_run(run)
     assert view.accuracy()["accuracy"] == 0.5 and view.outcomes() == {"correct": 1, "missing": 1}
     assert [w for w in view.warnings() if "importer" in w] == []
@@ -1433,3 +1440,8 @@ def test_rebuild_of_a_harness_run_uses_the_private_originals(harbor_env):
     assert_no_secret_outside_local(run_dir)
     assert hi.verify_snapshot(run_dir) == [] and open_run(run_dir).warnings() == []
     assert hp.read_state(run_dir)["status"] == "completed"
+
+
+def test_internal_retries_that_delete_trial_evidence_are_refused(tmp_path):
+    with pytest.raises(ValueError, match="delete failed trial evidence"):
+        hc.load_config(write_cfg(tmp_path, max_retries=1))

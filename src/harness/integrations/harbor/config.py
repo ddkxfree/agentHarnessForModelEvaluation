@@ -148,6 +148,15 @@ class HarborRunConfig(_Strict):
     environment: Environment = Field(default_factory=Environment)
     output_dir: Path = Path("runs/harbor")
 
+    @model_validator(mode="after")
+    def _preserve_attempt_evidence(self) -> HarborRunConfig:
+        if self.max_retries:
+            raise ValueError(
+                "max_retries must be 0: Harbor internal retries can delete failed trial evidence; "
+                "retry in a separately archived job"
+            )
+        return self
+
 
 def project_root(config_path: Path) -> Path:
     start = config_path.resolve().parent

@@ -32,7 +32,8 @@ from harness.integrations.harbor.mapping import MAPPING_VERSION, map_trial, numb
 
 # 2: planned trials without a directory are kept as ``missing`` (version 1 dropped them from
 # the denominator); records built by an older version are flagged and can be rebuilt
-IMPORTER_VERSION = 2
+# 3: deterministic run/attempt identities and independent generation/assessment states.
+IMPORTER_VERSION = 3
 # How the shareable snapshot (raw/) was redacted, apart from how records were mapped.
 # 1: UTF-8 text only (invalid UTF-8, NUL and binary data were stored as found)
 # 2: also invalid UTF-8, NUL and binary data, byte for byte
@@ -398,6 +399,17 @@ def build_records(
     while len(trials) < expected:
         trials.append(_placeholder(None, "missing", "planned by the job; task unknown", None))
     _number_placeholders(trials)
+    identity = run_id_for(config, lock)
+    for t in trials:
+        stable = str(
+            t.get("trial_id")
+            or t.get("trial_name")
+            or f"{t.get('task_path')}:{t.get('task_name')}:{t.get('repeat')}"
+        )
+        t["run_id"] = identity
+        t["attempt_id"] = (
+            "harbor_" + hashlib.sha256(f"{identity}:{stable}".encode()).hexdigest()[:32]
+        )
 
     outcomes = Counter(t["outcome"] for t in trials)
     with_model = [t for t in trials if t["usage"]["status"] != "not_applicable"]

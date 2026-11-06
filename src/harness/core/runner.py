@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +17,7 @@ from harness.core.io import write_json, write_results
 from harness.core.judge import JudgeError, JudgePanel, JudgeSpec, requires_judges
 from harness.core.manifest import environment_info, now, task_entry
 from harness.core.model import Model, ModelCallError
+from harness.core.observability import Journal, call_context, new_id, safe_data
 from harness.core.retry import retry_async
 from harness.core.scorer import (
     SUBMISSION_ARTIFACT,
@@ -123,6 +125,7 @@ async def run_samples(
     epoch: int = 1,
     namespace: str | None = None,
     judges: JudgePanel | None = None,
+    run_id: str | None = None,
 ) -> list[SampleResult]:
     """Solve and score every sample. ``artifact_dir`` receives files such as untruncated tool
     outputs, one subdirectory per sample; without it only their hashes are recorded.
@@ -138,8 +141,18 @@ async def run_samples(
     def retryable(exc: BaseException) -> bool:
         return is_timeout(exc) or model.is_retryable(exc)
 
+    run_id = run_id or new_id("run")
+
     async def run_one(sample: Sample) -> SampleResult:
-        result = SampleResult(sample=sample, epoch=epoch)
+        result = SampleResult(
+            sample=sample,
+            epoch=epoch,
+            record_schema_version=2,
+            generation_status="not_started",
+            assessment_status="not_started",
+            run_id=run_id,
+            attempt_id=new_id("attempt"),
+        )
         served: set[str] = set()
         # identities carried by cached outputs: where those responses originally came from
         served_cached: set[str] = set()
@@ -158,6 +171,10 @@ async def run_samples(
             if budget_lock is None:
                 return await call_model(messages, tools)
             async with budget_lock:
+                if spent.input_tokens is None or spent.output_tokens is None:
+                    raise ModelCallError(
+                        "cannot enforce token budget: provider did not report complete usage"
+                    )
                 # Replayed responses count too, so a resumed run stops where the original did.
                 if spent.total >= task.token_limit:
                     raise TokenLimitReached(f"{spent.total} >= {task.token_limit} tokens")
@@ -167,18 +184,98 @@ async def run_samples(
             messages: list[Message], tools: list[dict[str, Any]] | None
         ) -> ModelOutput:
             nonlocal spent
+            logical_id = new_id("call")
             key = cache_key(model_spec, messages, config, tools, key_namespace)
+            request = {
+                "model": model_spec,
+                "messages": messages,
+                "tools": tools,
+                "config": config.model_dump(mode="json"),
+            }
             if cache is not None and (hit := cache.get(key)) is not None:
+                replay = hit.model_copy(
+                    update={"cached": True, "call_id": logical_id, "origin_call_id": hit.call_id}
+                )
+                record = {
+                    "call_id": logical_id,
+                    "logical_call_id": logical_id,
+                    "retry_index": 0,
+                    "cached": True,
+                    "status": "completed",
+                    "usage": replay.usage.model_dump(mode="json"),
+                    "origin_call_id": hit.call_id,
+                }
+                result.model_calls.append(record)
+                trajectory.event(
+                    "model_cache_replayed",
+                    request=request,
+                    response=replay.model_dump(mode="json"),
+                    **record,
+                )
                 if (identity := hit.served_identity()) is not None:
                     served_cached.add(identity)
                 result.calls.cached += 1
                 spent += hit.usage
-                return hit.model_copy(update={"cached": True})
+                return replay
+
+            retry_index = 0
+
+            async def invoke() -> ModelOutput:
+                nonlocal retry_index
+                request_id = new_id("request")
+                record = {
+                    "call_id": request_id,
+                    "logical_call_id": logical_id,
+                    "retry_index": retry_index,
+                    "cached": False,
+                    "status": "started",
+                }
+                retry_index += 1
+                result.model_calls.append(record)
+                trajectory.event("model_call_started", request=request, **record)
+                token = call_context.set(
+                    {
+                        "run_id": result.run_id,
+                        "attempt_id": result.attempt_id,
+                        "call_id": request_id,
+                    }
+                )
+                started = time.perf_counter()
+                try:
+                    output = await asyncio.wait_for(
+                        model.generate(messages, config, tools), config.timeout
+                    )
+                    output = output.model_copy(
+                        update={"call_id": request_id, "origin_call_id": None}
+                    )
+                    record.update(
+                        status="completed",
+                        usage=output.usage.model_dump(mode="json"),
+                        provider_response_id=output.provider_response_id,
+                        latency_s=time.perf_counter() - started,
+                    )
+                    trajectory.event(
+                        "model_call_completed",
+                        response=output.model_dump(mode="json"),
+                        raw_response=output.raw_response,
+                        **record,
+                    )
+                    return output
+                except BaseException as exc:
+                    record.update(
+                        status="cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
+                        error=_describe(exc),
+                        latency_s=time.perf_counter() - started,
+                        usage=None,
+                    )
+                    trajectory.event("model_call_ended", **record)
+                    raise
+                finally:
+                    call_context.reset(token)
+
             try:
                 out = await retry_async(
-                    lambda: asyncio.wait_for(
-                        model.generate(messages, config, tools), config.timeout
-                    ),
+                    invoke,
                     retries=retries,
                     is_retryable=retryable,
                     base_delay=retry_base_delay,
@@ -226,10 +323,43 @@ async def run_samples(
                 result.cleanup_error = "; ".join(filter(None, [result.cleanup_error, error]))
 
         trajectory = Trajectory(artifact_dir, sample_dirname(sample.id, epoch))
+        evidence_root = (
+            artifact_dir / sample_dirname(sample.id, epoch) / "evidence" / result.attempt_id
+            if artifact_dir
+            else None
+        )
+        trajectory.journal = Journal(
+            evidence_root,
+            {
+                "schema_version": 2,
+                "run_id": result.run_id,
+                "attempt_id": result.attempt_id,
+                "task": task.name,
+                "sample_id": sample.id,
+                "epoch": epoch,
+            },
+        )
+        trajectory.snapshot = lambda: result.model_dump(mode="json")
         labels = {"harness.task": task.name, "harness.sample": sample.id}
         if epoch != 1:
             labels["harness.epoch"] = str(epoch)
-        async with sem:
+        trajectory.event("attempt_queued")
+
+        @asynccontextmanager
+        async def slot():
+            try:
+                await sem.acquire()
+            except asyncio.CancelledError:
+                result.generation_status = "cancelled"
+                result.generation_finish_reason = "cancelled_before_start"
+                trajectory.event("attempt_cancelled")
+                raise
+            try:
+                yield
+            finally:
+                sem.release()
+
+        async with slot():
             started = time.perf_counter()
             sandbox: Sandbox | None = None
             grader: Sandbox | None = None
@@ -242,13 +372,24 @@ async def run_samples(
                         sandbox = await sandbox_provider.create(task.sandbox(sample), labels=labels)
                         result.sandbox = sandbox.describe()
                     stage = ErrorKind.SOLVER
+                    result.generation_status = "running"
+                    trajectory.event("generation_started")
                     solved = await solve(sandbox)
                     result.messages, result.output, result.steps = (
                         solved.messages,
                         solved.output,
                         solved.steps,
                     )
+                    result.generation_finish_reason = solved.output.finish_reason
+                    result.generation_status = (
+                        "budget_stopped"
+                        if solved.output.finish_reason in ("token_limit", "time_limit", "max_steps")
+                        else "completed"
+                    )
+                    trajectory.event("generation_finished")
                     stage = ErrorKind.SCORER
+                    result.assessment_status = "running"
+                    trajectory.event("assessment_started")
                     text = solved.output.text
                     if grades_in_fresh_sandbox(task.scorer):
                         assert sandbox is not None and sandbox_provider is not None
@@ -274,19 +415,42 @@ async def run_samples(
                     else:
                         score = task.scorer(sample, text)
                     result.score = check_score(score)
+                    result.assessment_status = "completed"
+                    trajectory.event("assessment_finished")
             except Exception as exc:
                 fail(exc, stage)
+                if result.generation_status == "running":
+                    result.generation_status = "failed"
+                    result.generation_finish_reason = (
+                        result.error_kind.value if result.error_kind else "error"
+                    )
+                if result.assessment_status == "running":
+                    result.assessment_status = (
+                        "environment_failed" if isinstance(exc, SandboxError) else "failed"
+                    )
+                trajectory.event("attempt_failed", error=result.error, error_kind=result.error_kind)
                 if result.output is None:
                     result.messages, result.steps = trajectory.messages, trajectory.steps
+            except asyncio.CancelledError:
+                if result.generation_status == "running":
+                    result.generation_status = "cancelled"
+                    result.generation_finish_reason = "cancelled"
+                if result.assessment_status == "running":
+                    result.assessment_status = "cancelled"
+                result.messages, result.steps = trajectory.messages, trajectory.steps
+                trajectory.event("attempt_cancelled")
+                raise
             finally:
                 result.artifacts = trajectory.artifacts
                 for sb in (sandbox, grader):
                     if sb is not None:
                         await close(sb)
                 result.wall_time_s = time.perf_counter() - started
+                trajectory.checkpoint()
         result.served_models = sorted(served)
         result.cached_served_models = sorted(served_cached)
         result.outcome = classify(result)
+        trajectory.event("attempt_finished", outcome=result.outcome)
         if on_done:
             on_done(result)
         return result
@@ -367,6 +531,13 @@ async def run_eval(
         "started_at": now(),
         "finished_at": None,
         "model": model.spec(),
+        "observability": {
+            "record_schema_version": 2,
+            "events": "<task>/artifacts/<sample>/evidence/<attempt_id>/events.jsonl",
+            "checkpoint": "checkpoint.json",
+            "unknown_usage": "null; never inferred as zero",
+            "token_budget_unknown_usage": "stop before the next model call",
+        },
         "run_config": run_config or {},
         "environment": environment_info(),
         "tasks": [],
@@ -408,8 +579,14 @@ async def run_eval(
             with open(samples_path, "w") as live:
 
                 def on_done(r: SampleResult, live: Any = live, bar: Any = bar) -> None:
-                    live.write(r.model_dump_json() + "\n")
+                    import json
+                    import os
+
+                    live.write(
+                        json.dumps(safe_data(r.model_dump(mode="json")), ensure_ascii=False) + "\n"
+                    )
                     live.flush()
+                    os.fsync(live.fileno())
                     if progress is not None:
                         progress.advance(bar)
 
@@ -429,6 +606,7 @@ async def run_eval(
                         epoch=epoch,
                         namespace=namespace,
                         judges=panel,
+                        run_id=run_dir.name,
                     )
             summary = summarize(results)
             write_results(samples_path, results)

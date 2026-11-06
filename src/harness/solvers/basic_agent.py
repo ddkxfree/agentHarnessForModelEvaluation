@@ -148,6 +148,7 @@ class BasicAgent:
             all_cached = all_cached and out.cached
             step = Step(
                 index=i,
+                call_id=out.call_id,
                 text=out.text,
                 tool_calls=out.tool_calls,
                 usage=out.usage,
@@ -159,6 +160,7 @@ class BasicAgent:
                 assistant["tool_calls"] = [c.to_message() for c in out.tool_calls]
             messages.append(assistant)
 
+            trajectory.event("step_recorded", call_id=out.call_id, step_index=i)
             if not out.tool_calls:
                 final_text = out.text
                 finish = "length" if out.finish_reason == "length" else "no_tool_call"
@@ -167,6 +169,14 @@ class BasicAgent:
             submitted = False
             start = time.perf_counter()
             for j, call in enumerate(out.tool_calls):
+                trajectory.event(
+                    "tool_started",
+                    call_id=out.call_id,
+                    tool_execution_id=f"{out.call_id}:tool:{j}",
+                    provider_tool_call_id=call.id,
+                    tool=call.name,
+                    arguments=call.arguments,
+                )
                 exit_code: int | None = None
                 raw_name: str | None = None
                 if submitted:
@@ -178,7 +188,16 @@ class BasicAgent:
                     else:
                         observation, submitted, final_text = "Submitted.", True, answer
                 else:
-                    observation, exit_code, raw = await self._run_tool(call, sandbox)
+                    try:
+                        observation, exit_code, raw = await self._run_tool(call, sandbox)
+                    except BaseException as exc:
+                        trajectory.event(
+                            "tool_interrupted",
+                            call_id=out.call_id,
+                            tool_execution_id=f"{out.call_id}:tool:{j}",
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        raise
                     if raw is not None:
                         raw_name = trajectory.save_artifact(f"step-{i}-call-{j}.txt", raw).name
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": observation})
@@ -186,6 +205,14 @@ class BasicAgent:
                 step.raw_outputs.append(raw_name)
                 step.exit_codes.append(exit_code)
                 step.tool_latency_s = time.perf_counter() - start
+                trajectory.event(
+                    "tool_finished",
+                    call_id=out.call_id,
+                    tool_execution_id=f"{out.call_id}:tool:{j}",
+                    provider_tool_call_id=call.id,
+                    observation=observation,
+                    exit_code=exit_code,
+                )
             if submitted:
                 finish = "submit"
                 break

@@ -618,6 +618,18 @@ def supervise(
                                  note=refusal, finished_at=_now())  # fmt: skip
         if refusal:
             raise HarborRunError(refusal)
+        archive = None
+        if kind == "resume" and job_dir.exists():
+            import shutil
+
+            archive = run_dir / "local" / "attempt-history" / f"resume-{time.time_ns()}"
+            archive.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Preserve links as links; never follow a trial symlink into host files.
+            try:
+                shutil.copytree(job_dir, archive, symlinks=True)
+                os.chmod(archive, 0o700)
+            except OSError as exc:
+                raise HarborRunError(f"cannot preserve pre-resume evidence: {exc}") from exc
         log = open(run_dir / RAW_LOG, "ab")  # noqa: SIM115
         os.chmod(run_dir / RAW_LOG, 0o600)
         log.write(f"\n=== {kind} {_now()} ===\n".encode())
@@ -649,6 +661,8 @@ def supervise(
         _write_json(run_dir / PROCESS, ident)
         os.chmod(run_dir / PROCESS, 0o600)
         entry: dict[str, Any] = {"kind": kind, "started_at": _now(), "argv": argv}
+        if archive is not None:
+            entry["previous_evidence"] = str(archive.relative_to(run_dir))
         runs = [*read_state(run_dir).get("runs", []), entry]
         _update_state(run_dir, status="running", runs=runs, stop_reason=None, exit_code=None)
 

@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from harness.core.types import Outcome, SampleResult
+from harness.core.types import Outcome, SampleResult, Usage, token_sum
 
 
 def bootstrap_ci(
@@ -106,12 +106,12 @@ def judge_stats(results: list[SampleResult]) -> dict[str, Any] | None:
         "cached_calls": sum(c.cached for c in calls),
         "failed_calls": sum(c.error is not None for c in calls),
         "tokens": {
-            "input": sum(c.usage.input_tokens for c in calls),
-            "output": sum(c.usage.output_tokens for c in calls),
+            "input": token_sum(c.usage.input_tokens for c in calls),
+            "output": token_sum(c.usage.output_tokens for c in calls),
         },
         "fresh_tokens": {
-            "input": sum(c.usage.input_tokens for c in fresh),
-            "output": sum(c.usage.output_tokens for c in fresh),
+            "input": token_sum(c.usage.input_tokens for c in fresh),
+            "output": token_sum(c.usage.output_tokens for c in fresh),
         },
         "verdict_statuses": dict(
             Counter(
@@ -168,9 +168,27 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
         "rates": {o.value: (outcomes.get(o.value, 0) / n if n else 0.0) for o in Outcome},
         "extraction_methods": dict(methods.most_common()),
         "tokens": {
-            "input": sum(u.input_tokens for u in usages),
-            "output": sum(u.output_tokens for u in usages),
+            "input": token_sum(u.input_tokens for u in usages),
+            "output": token_sum(u.output_tokens for u in usages),
         },
+        "usage_details": sum(usages, Usage()).model_dump(mode="json"),
+        "fresh_usage_details": sum((r.calls.fresh_usage for r in results), Usage()).model_dump(
+            mode="json"
+        ),
+        "usage_coverage": {
+            "samples_with_complete_main_usage": sum(
+                u.input_tokens is not None and u.output_tokens is not None for u in usages
+            ),
+            "requests_with_unknown_usage": sum(
+                c.get("usage") is None
+                or c["usage"].get("input_tokens") is None
+                or c["usage"].get("output_tokens") is None
+                for r in results
+                for c in r.model_calls
+            ),
+        },
+        "generation_statuses": dict(Counter(r.generation_status for r in results)),
+        "assessment_statuses": dict(Counter(r.assessment_status for r in results)),
         "wall_time_s": {
             "total": sum(walls) if walls else None,
             "mean": sum(walls) / len(walls) if walls else None,
@@ -183,8 +201,8 @@ def summarize(results: list[SampleResult]) -> dict[str, Any]:
             "cached": sum(r.calls.cached for r in results),
         },
         "fresh_tokens": {
-            "input": sum(r.calls.fresh_usage.input_tokens for r in results),
-            "output": sum(r.calls.fresh_usage.output_tokens for r in results),
+            "input": token_sum(r.calls.fresh_usage.input_tokens for r in results),
+            "output": token_sum(r.calls.fresh_usage.output_tokens for r in results),
         },
         "cleanup_errors": sum(r.cleanup_error is not None for r in results),
         # Model identities the server reported, counted per sample.
