@@ -21,6 +21,10 @@
 
 ## 当前状态
 
+多评测集运行计划：核对 SWE-bench、Scale Pro V2、Terminal-Bench、JobBench 的提交与计分规则。首期四个条件合计 946 次作答，按分套沙箱验收及用量预跑推进。见 [59](progress/59-benchmark-campaign-plan.md)。
+
+Terminal-Bench 榜单预检：已核对上游固定题库与 66 题各至少 5 次的校验规则，并下载全部 66 道官方任务。首个条件拟用 Cursor CLI 与 Grok 4.7 High，沙箱验收、正式作答和社区投稿待验证。见 [58](progress/58-terminal-bench-leaderboard-protocol.md)。
+
 Harbor运行体验（2026-11-06）：run／resume新增10秒进度、阶段汇总与最新活动，清理和归档阶段提示；结束自动生成无需服务的report.html，新增export补导出历史记录。既有Cursor真实运行15步轨迹已补报告，新流程Oracle1/1通过，无新增模型费用；浏览器file预览受限，见 [57](progress/57-harbor-progress-offline-report.md) 与 [说明](harbor-offline-reports.md)。
 
 本机Cursor环境（2026-11-06）：Docker／Harbor0.25.0就绪，题目容器安装Cursor CLI成功；独立联网fix-git派生环境Oracle1/1通过，无残留容器。新增隐藏输入Key、列模型、指定模型单题启动入口；用户尚需创建Cursor用户Key，未调用Cursor模型、扣费和轨迹仍待实测。见 [56](progress/56-cursor-local-environment.md) 与 [快速开始](cursor-local-quickstart.md)。
